@@ -164,6 +164,7 @@ class EverOSHttpAdapter:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.transport = transport
+        self.scan_budget: list[int] | None = None
 
     async def health(self) -> EverOSHealth:
         """Probe EverOS liveness with a short timeout for the status badge."""
@@ -338,6 +339,14 @@ class EverOSHttpAdapter:
                     code="EVEROS_INVALID_MEMORY_RESPONSE",
                     status_code=502,
                 )
+            if self.scan_budget is not None:
+                if payload["total_count"] > self.scan_budget[0]:
+                    raise EverOSAdapterError(
+                        "Source scan limit exceeded.",
+                        code="GATEWAY_SCAN_LIMIT",
+                        status_code=413,
+                    )
+                self.scan_budget[0] -= payload["total_count"]
             return self._shape_user_records(
                 payload, memory_type=memory_type,
                 app_id=app_id, project_id=project_id, user_id=user_id,
@@ -375,6 +384,12 @@ class EverOSHttpAdapter:
                     status_code=502,
                 )
             if expected_total is None:
+                if self.scan_budget is not None:
+                    if total_count > self.scan_budget[0]:
+                        raise EverOSAdapterError("Source scan limit exceeded.",
+                        code="GATEWAY_SCAN_LIMIT",
+                        status_code=413,)
+                    self.scan_budget[0] -= total_count
                 expected_total = total_count
             elif total_count != expected_total:
                 raise EverOSAdapterError(

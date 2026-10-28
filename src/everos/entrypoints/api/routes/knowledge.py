@@ -18,7 +18,9 @@ Endpoint overview (design spec sections 6.2-6.6):
 
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime
+from pathlib import Path as FilePath
 from typing import TYPE_CHECKING, Annotated, Literal
 
 if TYPE_CHECKING:
@@ -27,7 +29,9 @@ if TYPE_CHECKING:
 from everalgo.types import ParsedContent
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, UploadFile
 from fastapi.params import Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from everos.component.embedding import get_embedding_capability
 from everos.component.llm import get_llm_client
@@ -57,6 +61,7 @@ from everos.service import (
     replace_document,
     search_knowledge,
 )
+from everos.service.knowledge_export import prepare_zip, resolve_original
 
 # PathSafeId and SuccessEnvelope are imported from memorize routes;
 # a shared module would be cleaner but is out of scope for this PR.
@@ -197,6 +202,12 @@ class DocumentOverviewItemDTO(BaseModel):
     title: str
     topic_count: int
     created_at: datetime
+    source_name: str | None = None
+    source_type: str | None = None
+    updated_at: datetime | None = None
+    original_available: bool = False
+    original_bytes: int = 0
+    derived_bytes: int = 0
 
 
 class DocumentListResponse(BaseModel):
@@ -206,6 +217,13 @@ class DocumentListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class KnowledgeExportRequest(BaseModel):
+    app_id: PathSafeId
+    project_id: PathSafeId
+    doc_ids: list[str] = Field(min_length=1, max_length=100)
+    include_derived: bool = False
 
 
 class TopicDetailResponse(BaseModel):
@@ -314,8 +332,34 @@ def _build_extractor() -> KnowledgeExtractor:
     defined in ``service.knowledge``.
     """
     # Deferred: heavy everalgo import; only needed on document creation.
+    from urllib.parse import urlsplit
+
     from everalgo.knowledge import KnowledgeExtractor as AlgoKnowledgeExtractor
 
+    settings = load_settings()
+    cfg = settings.knowledge.extraction
+    llm = settings.llm
+    endpoint = urlsplit(llm.base_url or "")
+    key = llm.api_key.get_secret_value() if llm.api_key else ""
+    use_ollama = cfg.backend == "ollama" or (
+        cfg.backend == "auto"
+        and (endpoint.port == 11434 or key == "ollama" or cfg.ollama_base_url)
+    )
+    if use_ollama:
+        from everos.component.knowledge.ollama_extractor import OllamaKnowledgeExtractor
+
+        base_url = (cfg.ollama_base_url or llm.base_url or "").rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        if not base_url:
+            raise ProviderNotConfiguredError(provider="llm", feature="knowledge")
+        return OllamaKnowledgeExtractor(
+            base_url=base_url,
+            model=llm.model,
+            api_key=key,
+            timeout=llm.timeout_seconds,
+            total_timeout=cfg.total_timeout_seconds,
+        )
     return AlgoKnowledgeExtractor(llm=get_llm_client())
 
 
@@ -482,6 +526,12 @@ def _map_list_result(result: DocumentListResult) -> DocumentListResponse:
                 title=d.title,
                 topic_count=d.topic_count,
                 created_at=to_display_tz(d.created_at),
+                source_name=d.source_name,
+                source_type=d.source_type,
+                updated_at=to_display_tz(d.updated_at) if d.updated_at else None,
+                original_available=d.original_available,
+                original_bytes=d.original_bytes,
+                derived_bytes=d.derived_bytes,
             )
             for d in result.documents
         ],
@@ -648,6 +698,11 @@ async def list_documents_route(
     app_id: _QueryPathSafe = "default",
     project_id: _QueryPathSafe = "default",
     category_id: _QueryOptStr = None,
+    title_query: _QueryOptStr = None,
+    source_type: _QueryOptStr = None,
+    file_type: _QueryOptStr = None,
+    created_from: _QueryOptStr = None,
+    created_to: _QueryOptStr = None,
     page: _QueryPage = 1,
     page_size: _QueryPageSize = 20,
     sort_by: _QuerySortBy = "created_at",
@@ -655,14 +710,20 @@ async def list_documents_route(
 ) -> SuccessEnvelope[DocumentListResponse]:
     """Paginated document listing."""
     rid = extract_request_id(request)
+    filters = {}
+    if title_query:
+        filters["title_query"] = title_query
+    if source_type:
+        filters["source_type"] = source_type
+    if file_type:
+        filters["file_type"] = file_type
+    if created_from:
+        filters["created_from"] = created_from
+    if created_to:
+        filters["created_to"] = created_to
     result = await list_documents(
-        app_id,
-        project_id,
-        category_id=category_id,
-        page=page,
-        page_size=page_size,
-        sort_by=sort_by,
-        sort_order=sort_order,
+        app_id, project_id, category_id=category_id, page=page,
+        page_size=page_size, sort_by=sort_by, sort_order=sort_order, **filters,
     )
     return SuccessEnvelope(request_id=rid, data=_map_list_result(result))
 
@@ -678,6 +739,25 @@ async def get_document_route(
     rid = extract_request_id(request)
     detail = await get_document(doc_id, app_id, project_id)
     return SuccessEnvelope(request_id=rid, data=_map_document_detail(detail))
+
+
+@router.get("/documents/{doc_id}/original")
+async def download_original_route(
+    doc_id: _PathDocId,
+    app_id: _QueryPathSafe,
+    project_id: _QueryPathSafe,
+) -> FileResponse:
+    path, filename = await resolve_original(doc_id, app_id, project_id)
+    return FileResponse(path, filename=filename,
+                        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream")
+
+
+@router.post("/exports")
+async def export_knowledge_route(req: KnowledgeExportRequest) -> FileResponse:
+    archive = await prepare_zip(req.doc_ids, req.app_id, req.project_id,
+                                include_derived=req.include_derived)
+    return FileResponse(archive, filename="knowledge-export.zip", media_type="application/zip",
+                        background=BackgroundTask(FilePath.unlink, archive, missing_ok=True))
 
 
 @router.get("/topics/{topic_id}")

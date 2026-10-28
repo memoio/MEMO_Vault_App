@@ -147,6 +147,9 @@ query_max_concurrent = 4
 # `provider` picks the request-shape:
 #   - "deepinfra" -> POST {base_url}/{model} (DeepInfra inference API)
 #   - "vllm"      -> POST {base_url}/rerank (OpenAI-compat rerank endpoint)
+#   - "local"     -> in-process CrossEncoder; model must be a local directory
+# Local example: model = "/root/models/bge-reranker-base", device = "cpu".
+# Install the local-rerank extra; no base_url or api_key is needed.
 provider = "deepinfra"
 model     = "Qwen/Qwen3-Reranker-4B"
 api_key   = ""
@@ -155,6 +158,9 @@ timeout_seconds = 30.0
 max_retries     = 3
 batch_size      = 10
 max_concurrent  = 5
+# Local-only options (use max_concurrent = 1 for CPU inference):
+device = "cpu"
+max_length = 512
 
 [boundary_detection]
 # Passed through to ``everalgo.BoundaryDetector.adetect``.
@@ -176,6 +182,13 @@ mode = "agent"
 # / gateway body-size limit for hard ingress protection.
 # Override via EVEROS_KNOWLEDGE__MAX_UPLOAD_BYTES.
 max_upload_bytes = 52_428_800  # 50 MiB
+
+[knowledge.extraction]
+# auto selects the native adapter for Ollama keys/port 11434.
+# Use "ollama" with ollama_base_url for other ports or reverse proxies.
+# Runtime context is read from /api/ps for each extraction; never fixed here.
+backend = "auto"
+total_timeout_seconds = 600.0
 
 [knowledge.search]
 recall_n = 200

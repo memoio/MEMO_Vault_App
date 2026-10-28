@@ -19,6 +19,7 @@ from everalgo.llm import LLMError
 from everos.component.llm import LLMNotConfiguredError, get_llm_client
 from everos.config import load_settings
 from everos.core.errors import ExternalServiceError, ProviderNotConfiguredError
+from everos.core.observability.logging import get_logger
 from everos.core.persistence import MemoryRoot
 from everos.entrypoints.api.routes.memorize import PathSafeId
 from everos.entrypoints.api.utils import extract_request_id
@@ -38,12 +39,14 @@ from everos.service.memo_vault_lifecycle import (
 )
 
 router = APIRouter(prefix="/memo-vault/candidates", tags=["memo-vault-candidates"])
+logger = get_logger(__name__)
 
 
 class CandidateMessageDTO(BaseModel):
     id: PathSafeId = Field(min_length=1, max_length=128)
     role: Literal["user", "assistant"]
-    content: str = Field(max_length=100_000)
+    # Long exports are split into bounded MemCell inputs by the extraction service.
+    content: str = Field(max_length=1_000_000)
     timestamp_ms: int = Field(gt=0)
 
 
@@ -136,12 +139,21 @@ async def extract_candidates(
             "preference": "画像",
             "profile": "画像",
         }[exc.stage]
-        error = ExternalServiceError(
-            f"候选抽取模型多次返回无效的{stage_label}格式；本次结果未保存，可以稍后重试。"
+        message = (
+            f"候选抽取的{stage_label}输出多次达到长度上限，结构化结果被截断；"
+            "本次结果未保存，可以调整模型或缩短输入后重试。"
+            if exc.reason == "output_truncated"
+            else f"候选抽取模型多次返回无效的{stage_label}格式；本次结果未保存，可以稍后重试。"
         )
+        error = ExternalServiceError(message)
         error.stage = {"boundary": "model_boundary", "episode": "model_episode", "atomic_fact": "model_atomic_fact", "preference": "model_preference", "profile": "model_profile"}[exc.stage]
         raise error from exc
     except LLMError as exc:
+        logger.warning(
+            "memo_vault_candidate_model_call_failed",
+            error_type=type(exc).__name__,
+            cause_type=type(exc.__cause__).__name__ if exc.__cause__ else None,
+        )
         error = ExternalServiceError(
             "候选抽取模型调用失败；请检查本地 Ollama 的结构化输出支持与运行日志。"
         )

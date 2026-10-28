@@ -1,3 +1,4 @@
+import { ownerFetch } from "./ownerSession";
 export type FeatureStatus = "not_started" | "ready";
 
 export interface VaultHealth {
@@ -68,6 +69,7 @@ export interface ImportPreview {
   messages: PreviewMessage[];
   tool_events: PreviewToolEvent[];
   duplicate_batch_id: string | null;
+  import_report?: { counts?: Record<string, number>; warnings?: string[]; retained_source_files?: string[] };
 }
 
 export interface ImportBatch {
@@ -282,6 +284,7 @@ export interface ReviewCandidate {
   valid_until: string | null;
   created_at: string;
   evidence: CandidateEvidence[];
+  metadata?: Record<string, unknown>;
 }
 
 interface Envelope<T> {
@@ -306,7 +309,7 @@ export async function previewMemoryPack(
   request: PackPreviewRequest,
   signal?: AbortSignal,
 ): Promise<PackPreview> {
-  return requestData<PackPreview>(await fetch("/api/v1/packs/preview", {
+  return requestData<PackPreview>(await ownerFetch("/api/v1/packs/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -315,7 +318,7 @@ export async function previewMemoryPack(
 }
 
 export async function exportMemoryPack(request: PackExportRequest): Promise<PackExport> {
-  return requestData<PackExport>(await fetch("/api/v1/packs/export", {
+  return requestData<PackExport>(await ownerFetch("/api/v1/packs/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -323,19 +326,19 @@ export async function exportMemoryPack(request: PackExportRequest): Promise<Pack
 }
 
 export async function getHealth(): Promise<VaultHealth> {
-  return requestData<VaultHealth>(await fetch("/api/v1/system/health"));
+  return requestData<VaultHealth>(await ownerFetch("/api/v1/system/health"));
 }
 
 export async function getProjects(): Promise<ProjectSpace[]> {
   const result = await requestData<{ projects: ProjectSpace[] }>(
-    await fetch("/api/v1/projects"),
+    await ownerFetch("/api/v1/projects"),
   );
   return result.projects;
 }
 
 export async function getMemoryLibrarySummary(): Promise<LibraryProjectCount[]> {
   const result = await requestData<{ projects: LibraryProjectCount[] }>(
-    await fetch("/api/v1/memories/summary"),
+    await ownerFetch("/api/v1/memories/summary"),
   );
   return result.projects;
 }
@@ -348,7 +351,7 @@ export async function getLibraryMemories(
   const params = new URLSearchParams({ project_id: projectId, status });
   if (query.trim()) params.set("q", query.trim());
   return requestData<LibraryListResult>(
-    await fetch(`/api/v1/memories?${params.toString()}`),
+    await ownerFetch(`/api/v1/memories?${params.toString()}`),
   );
 }
 
@@ -358,7 +361,7 @@ export async function getLibraryMemory(
 ): Promise<LibraryMemoryDetail> {
   const params = new URLSearchParams({ project_id: projectId });
   return requestData<LibraryMemoryDetail>(
-    await fetch(`/api/v1/memories/${encodeURIComponent(memoryId)}?${params.toString()}`),
+    await ownerFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}?${params.toString()}`),
   );
 }
 
@@ -368,7 +371,7 @@ export async function createProject(
   description: string,
 ): Promise<ProjectSpace> {
   return requestData<ProjectSpace>(
-    await fetch("/api/v1/projects", {
+    await ownerFetch("/api/v1/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, parent_project_id: parentProjectId, description }),
@@ -384,7 +387,7 @@ export async function correctLibraryMemory(
   note: string,
 ): Promise<LibraryMemoryDetail> {
   const params = new URLSearchParams({ project_id: projectId });
-  return requestData<LibraryMemoryDetail>(await fetch(`/api/v1/memories/${encodeURIComponent(memory.id)}?${params.toString()}`, {
+  return requestData<LibraryMemoryDetail>(await ownerFetch(`/api/v1/memories/${encodeURIComponent(memory.id)}?${params.toString()}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ revision: memory.revision, content, external_use: externalUse, note: note.trim() || null }),
@@ -396,7 +399,7 @@ export async function withdrawLibraryMemory(
   memory: LibraryMemory,
 ): Promise<LibraryMemoryDetail> {
   const params = new URLSearchParams({ project_id: projectId });
-  return requestData<LibraryMemoryDetail>(await fetch(`/api/v1/memories/${encodeURIComponent(memory.id)}/withdraw?${params.toString()}`, {
+  return requestData<LibraryMemoryDetail>(await ownerFetch(`/api/v1/memories/${encodeURIComponent(memory.id)}/withdraw?${params.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ revision: memory.revision }),
@@ -408,7 +411,7 @@ export async function deleteLibraryMemory(
   memory: LibraryMemory,
 ): Promise<LibraryMemoryDetail> {
   const params = new URLSearchParams({ project_id: projectId, revision: String(memory.revision) });
-  return requestData<LibraryMemoryDetail>(await fetch(`/api/v1/memories/${encodeURIComponent(memory.id)}?${params.toString()}`, {
+  return requestData<LibraryMemoryDetail>(await ownerFetch(`/api/v1/memories/${encodeURIComponent(memory.id)}?${params.toString()}`, {
     method: "DELETE",
   }));
 }
@@ -424,13 +427,13 @@ export async function previewImport(
   form.append("source_type", sourceType);
   form.append("project_id", projectId);
   return requestData<ImportPreview>(
-    await fetch("/api/v1/imports/preview", { method: "POST", body: form, signal }),
+    await ownerFetch("/api/v1/imports/preview", { method: "POST", body: form, signal }),
   );
 }
 
 export async function cancelPreview(previewId: string): Promise<void> {
   await requestData<{ cancelled: boolean }>(
-    await fetch(`/api/v1/imports/previews/${encodeURIComponent(previewId)}`, {
+    await ownerFetch(`/api/v1/imports/previews/${encodeURIComponent(previewId)}`, {
       method: "DELETE",
     }),
   );
@@ -441,7 +444,7 @@ export async function commitImport(
   projectId: string,
 ): Promise<ImportBatch> {
   return requestData<ImportBatch>(
-    await fetch("/api/v1/imports/commit", {
+    await ownerFetch("/api/v1/imports/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ preview_id: previewId, project_id: projectId }),
@@ -451,7 +454,7 @@ export async function commitImport(
 
 export async function extractImport(batchId: string): Promise<ExtractionResult> {
   return requestData<ExtractionResult>(
-    await fetch(`/api/v1/imports/${encodeURIComponent(batchId)}/extract`, {
+    await ownerFetch(`/api/v1/imports/${encodeURIComponent(batchId)}/extract`, {
       method: "POST",
     }),
   );
@@ -465,7 +468,7 @@ export async function getCandidates(filters: { status?: string; kind?: string; o
   if (filters.evidence) params.set("evidence", filters.evidence);
   const suffix = params.size ? `?${params.toString()}` : "";
   const result = await requestData<{ candidates: ReviewCandidate[]; total: number }>(
-    await fetch(`/api/v1/candidates${suffix}`),
+    await ownerFetch(`/api/v1/candidates${suffix}`),
   );
   return result.candidates;
 }
@@ -479,7 +482,7 @@ export interface ManualCandidateInput {
 }
 
 export async function createManualCandidate(input: ManualCandidateInput): Promise<ReviewCandidate> {
-  return requestData<ReviewCandidate>(await fetch("/api/v1/candidates", {
+  return requestData<ReviewCandidate>(await ownerFetch("/api/v1/candidates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -491,7 +494,7 @@ export async function getCandidateSource(
   messageId: string,
   content: string,
 ): Promise<SourceConversation> {
-  return requestData<SourceConversation>(await fetch(
+  return requestData<SourceConversation>(await ownerFetch(
     `/api/v1/candidates/${encodeURIComponent(candidateId)}/source/${encodeURIComponent(messageId)}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) },
   ));
@@ -501,7 +504,7 @@ export interface CandidateChanges { content: string; kind: CandidateKind; namesp
 
 export async function confirmCandidate(candidate: ReviewCandidate, changes: CandidateChanges): Promise<void> {
   await requestData<{ id: string; status: string; everos_memory_id: string; revision: number }>(
-    await fetch(`/api/v1/candidates/${encodeURIComponent(candidate.id)}/confirm`, {
+    await ownerFetch(`/api/v1/candidates/${encodeURIComponent(candidate.id)}/confirm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -519,10 +522,43 @@ export async function confirmCandidate(candidate: ReviewCandidate, changes: Cand
 
 export async function rejectCandidate(candidate: ReviewCandidate): Promise<void> {
   await requestData<{ id: string; status: string }>(
-    await fetch(`/api/v1/candidates/${encodeURIComponent(candidate.id)}/reject`, {
+    await ownerFetch(`/api/v1/candidates/${encodeURIComponent(candidate.id)}/reject`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ revision: candidate.revision }),
     }),
   );
+}
+
+export interface ClaudeJob {
+  id: string; status: string; project_id: string; filename: string; batch_id?: string | null;
+  error_code: string | null; error_message: string | null; retryable: boolean;
+  input_kind?: 'manifest' | 'single_zip' | 'local_bundle'; part_count?: number; created_at?: string; manifest_verified?: boolean;
+  progress: Record<string, unknown>;
+}
+export interface ClaudeRecord {
+  record_id: string; title?: string; text: string; kind?: string;
+  source_project_id?: string | null; status: string; target_id?: string | null;
+  review_decision?: 'knowledge' | 'vault_only' | 'exclude' | null; reviewed_at?: string | null;
+  text_length?: number; text_truncated?: boolean;
+}
+export interface ClaudeContent {
+  documents: ClaudeRecord[]; assertions: ClaudeRecord[];
+  agent_event_count: number;
+  agent_events: { record_id: string; record_type: string; call_id?: string;
+    tool_name?: string; sequence: number; timestamp_ms: number | null;
+    is_error: boolean; preview: string }[];
+  assets: { record_id: string; filename?: string; media_type?: string; bytes: number; status: string;
+    target_id?: string | null; review_decision?: 'knowledge' | 'vault_only' | 'exclude' | null;
+    linked_document_ids: string[] }[];
+  source_files: { name?: string; original_name?: string; sha256?: string; media_type?: string;
+    bytes?: number; status?: string; container?: string }[];
+  source_file_total?: number; source_files_truncated?: boolean;
+  scope: { app_id: string; project_id: string };
+  report: { warnings?: string[]; counts?: Record<string, number> };
+}
+export async function claudeRequest<T>(path: string, method = 'GET', body?: BodyInit): Promise<T> {
+  return requestData<T>(await ownerFetch(`/api/v1/${path}`, {
+    method, body, headers: typeof body === 'string' ? { 'Content-Type': 'application/json' } : undefined,
+  }));
 }

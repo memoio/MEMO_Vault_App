@@ -13,6 +13,7 @@ Public surface:
   self-hosted, other compatible servers).
 - :class:`DashScopeRerankProvider` — DashScope (Aliyun Bailian)
   ``gte-rerank-v2`` native text-rerank endpoint.
+- :class:`LocalRerankProvider` — offline in-process CrossEncoder inference.
 - :func:`build_rerank_provider` — settings-driven factory that picks
   the concrete provider via ``settings.rerank.provider``.
 - :func:`get_rerank_capability` — process-wide lazy singleton accessor
@@ -32,6 +33,7 @@ from .capability import RerankCapability as RerankCapability
 from .dashscope_provider import DashScopeRerankProvider as DashScopeRerankProvider
 from .deepinfra_provider import DeepInfraRerankProvider as DeepInfraRerankProvider
 from .factory import build_rerank_provider as build_rerank_provider
+from .local_provider import LocalRerankProvider as LocalRerankProvider
 from .protocol import RerankError as RerankError
 from .protocol import RerankProvider as RerankProvider
 from .protocol import RerankResult as RerankResult
@@ -40,6 +42,7 @@ from .vllm_provider import VllmRerankProvider as VllmRerankProvider
 __all__ = [
     "DashScopeRerankProvider",
     "DeepInfraRerankProvider",
+    "LocalRerankProvider",
     "RerankCapability",
     "RerankError",
     "RerankProvider",

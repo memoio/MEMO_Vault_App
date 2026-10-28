@@ -21,6 +21,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from everos.component.utils.datetime import get_utc_now
+from everos.umif.canonical import content_hash as canonical_content_hash
 
 from .storage import VaultStore
 
@@ -555,7 +556,11 @@ class ImportService:
         for path in self.preview_dir.glob("*"):
             try:
                 if path.stat().st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
+                    if path.is_dir():
+                        import shutil
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink(missing_ok=True)
             except OSError:
                 continue
 
@@ -564,8 +569,24 @@ class ImportService:
     ) -> tuple[Any, ParsedImport]:
         from .umif_projection import project_for_vault
 
-        if source_type == "deepseek_harness":
+        if source_type == "chatgpt":
+            from .chatgpt_export import convert_chatgpt_export
+            package = convert_chatgpt_export(
+                payload, filename, project_id,
+                max_unpacked_bytes=self.max_archive_unpacked_bytes,
+                max_files=self.max_archive_files,
+                max_compression_ratio=self.max_archive_compression_ratio,
+            )
+        elif source_type == "claude":
+            import tempfile
+            from .claude_export import convert_claude_export
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / filename
+                path.write_bytes(payload)
+                package = convert_claude_export([path], project_id)
+        elif source_type == "deepseek_harness":
             from .deepseek_harness import convert_harness_v4
+            from .deepseek_web import convert_deepseek_web
 
             limits = ImportLimits(
                 max_file_bytes=self.max_file_bytes,
@@ -573,8 +594,36 @@ class ImportService:
                 max_files=self.max_archive_files,
                 max_compression_ratio=self.max_archive_compression_ratio,
             )
-            session = read_harness_export(payload, filename, limits)
-            package = convert_harness_v4(session, project_id)
+            web_export = False
+            if Path(filename).suffix.lower() == ".zip":
+                try:
+                    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                        names = {
+                            item.filename for item in archive.infolist() if not item.is_dir()
+                        }
+                except (zipfile.BadZipFile, OSError) as exc:
+                    raise ImportWorkflowError(
+                        "IMPORT_SECURITY_REJECTED", "Invalid ZIP archive."
+                    ) from exc
+                web_export = "conversations.json" in names
+                if web_export and any(
+                    PurePosixPath(name).name == "session.v4.jsonl" for name in names
+                ):
+                    raise ImportWorkflowError(
+                        "IMPORT_PARSE_FAILED", "ZIP contains multiple DeepSeek formats."
+                    )
+            if web_export:
+                package = convert_deepseek_web(
+                    payload,
+                    filename,
+                    project_id,
+                    max_unpacked_bytes=self.max_archive_unpacked_bytes,
+                    max_files=self.max_archive_files,
+                    max_compression_ratio=self.max_archive_compression_ratio,
+                )
+            else:
+                session = read_harness_export(payload, filename, limits)
+                package = convert_harness_v4(session, project_id)
         else:
             parsed_source = parse_import_file(
                 filename,
@@ -605,9 +654,12 @@ class ImportService:
         *,
         content_type: str | None = None,
         project_id: str | None = None,
+        _package: Any = None,
+        _source_files: tuple[Path, ...] = (),
+        _job_id: str | None = None,
     ) -> dict[str, Any]:
         self._cleanup_expired_previews()
-        if source_type not in {"generic", "deepseek_harness"}:
+        if source_type not in {"generic", "deepseek_harness", "claude", "chatgpt"}:
             raise ImportWorkflowError(
                 "IMPORT_SOURCE_UNSUPPORTED",
                 "This import source is not supported.",
@@ -627,12 +679,14 @@ class ImportService:
                 "IMPORT_PARSE_FAILED",
                 "DeepSeek Harness imports require a .jsonl or .zip session file.",
             )
+        if source_type == "chatgpt" and extension != ".zip":
+            raise ImportWorkflowError("IMPORT_PARSE_FAILED", "ChatGPT imports require a ZIP export.")
         if source_type == "generic" and extension == ".jsonl":
             raise ImportWorkflowError(
                 "IMPORT_SOURCE_UNSUPPORTED",
                 "Select the DeepSeek Harness source for .jsonl session files.",
             )
-        if source_type == "deepseek_harness":
+        if source_type in {"deepseek_harness", "claude", "chatgpt"}:
             if project_id is None:
                 raise ImportWorkflowError(
                     "PROJECT_REQUIRED",
@@ -652,14 +706,30 @@ class ImportService:
                     "PROJECT_NOT_FOUND", "Choose a project space that exists in this Vault.", status_code=404
                 )
         _validate_content_type(clean_name, content_type)
-        package, parsed = self._convert_to_umif(clean_name, source_type, payload, project_id)
+        if _package is None:
+            package, parsed = self._convert_to_umif(clean_name, source_type, payload, project_id)
+        else:
+            from .umif_projection import project_for_vault
+            package, parsed = _package, project_for_vault(_package)
         from everos.umif.validator import validate_package
         validation = validate_package(package)
         if not validation.valid:
             raise ImportWorkflowError("UMIF_VALIDATION_FAILED", ", ".join(validation.errors))
+        if source_type == "claude":
+            from .claude_export import PARSER_VERSION as CLAUDE_PARSER_VERSION
+            parsed = replace(parsed, parser_version=CLAUDE_PARSER_VERSION)
+        if source_type == "chatgpt":
+            from .chatgpt_export import PARSER_VERSION as CHATGPT_PARSER_VERSION
+            parsed = replace(parsed, parser_version=CHATGPT_PARSER_VERSION)
+        if (
+            source_type == "deepseek_harness"
+            and package.manifest.source_exports[0].get("provider") == "deepseek_web"
+        ):
+            from .deepseek_web import PARSER_VERSION as DEEPSEEK_WEB_PARSER_VERSION
+            parsed = replace(parsed, parser_version=DEEPSEEK_WEB_PARSER_VERSION)
         raw_hash = hashlib.sha256(payload).hexdigest()
         with self.store.connect() as connection:
-            if source_type == "deepseek_harness":
+            if source_type in {"deepseek_harness", "claude", "chatgpt"}:
                 duplicate = connection.execute(
                     """SELECT id FROM import_batches
                        WHERE file_sha256 = ? AND project_id = ? AND parser_version = ?
@@ -680,20 +750,20 @@ class ImportService:
             }
             known_message_ids: dict[str, list[tuple[str, str]]] = {}
             known_tool_event_ids: dict[str, tuple[str, str | None]] = {}
-            if source_type == "deepseek_harness":
+            if source_type in {"deepseek_harness", "claude", "chatgpt"}:
                 for row in connection.execute(
                     """SELECT m.source_message_id, m.content_sha256, b.parser_version
                        FROM normalized_messages m JOIN import_batches b ON b.id = m.batch_id
-                       WHERE m.source_message_id IS NOT NULL AND b.project_id = ?""",
-                    (project_id,),
+                       WHERE m.source_message_id IS NOT NULL AND b.project_id = ? AND b.source_type = ?""",
+                    (project_id, source_type),
                 ).fetchall():
                     known_message_ids.setdefault(row[0], []).append((row[1], row[2]))
                 known_tool_event_ids = {
                     row[0]: (row[1], row[2])
                     for row in connection.execute(
                         "SELECT source_event_id, content_sha256, source_content_sha256 FROM normalized_tool_events "
-                        "WHERE batch_id IN (SELECT id FROM import_batches WHERE project_id = ?)",
-                        (project_id,),
+                        "WHERE batch_id IN (SELECT id FROM import_batches WHERE project_id = ? AND source_type = ?)",
+                        (project_id, source_type),
                     ).fetchall()
                 }
             if duplicate:
@@ -706,7 +776,7 @@ class ImportService:
         normalized_messages = []
         source_event_conflict_count = 0
         for message in parsed.messages:
-            if source_type == "deepseek_harness":
+            if source_type in {"deepseek_harness", "claude", "chatgpt"}:
                 prior_versions = known_message_ids.get(message.source_message_id or "", [])
                 prior_hashes = [content_hash for content_hash, _ in prior_versions]
                 is_duplicate = any(
@@ -771,6 +841,10 @@ class ImportService:
             "umif_record_count": validation.record_count,
             "umif_warnings": list(validation.warnings),
             "duplicate_batch_id": duplicate["id"] if duplicate else None,
+            "import_report": package.import_report,
+            "source_job_id": _job_id,
+            "source_file_hashes": {},
+            "umif_snapshot_hash": canonical_content_hash(package.manifest.model_dump(mode="json")),
         }
         metadata_path = self.preview_dir / f"{preview_id}.json"
         raw_path = self.preview_dir / f"{preview_id}.raw"
@@ -779,6 +853,21 @@ class ImportService:
                 json.dumps(preview_data, ensure_ascii=False), encoding="utf-8"
             )
             raw_path.write_bytes(payload)
+            if source_type == "claude":
+                import shutil
+                from everos.umif.package import write_package
+                write_package(package, self.preview_dir / f"{preview_id}.umif")
+                source_dir = self.preview_dir / f"{preview_id}.source"
+                source_dir.mkdir()
+                for source_file in _source_files:
+                    from .export_downloader import ExportDownloader
+                    name = self.safe_filename(source_file.name)
+                    target = source_dir / name
+                    if target.exists():
+                        raise ImportWorkflowError('PREVIEW_CORRUPTED', 'Conflicting source filenames.')
+                    shutil.copyfile(source_file, target)
+                    preview_data['source_file_hashes'][name] = ExportDownloader.checksum(target)
+                metadata_path.write_text(json.dumps(preview_data, ensure_ascii=False), encoding='utf-8')
         except OSError:
             metadata_path.unlink(missing_ok=True)
             raw_path.unlink(missing_ok=True)
@@ -814,6 +903,7 @@ class ImportService:
             "messages": messages[:20],
             "tool_events": tool_events,
             "duplicate_batch_id": data["duplicate_batch_id"],
+            "import_report": data.get("import_report", {}),
         }
 
     @staticmethod
@@ -839,6 +929,10 @@ class ImportService:
     def cancel_preview(self, preview_id: str) -> None:
         self._preview_path(preview_id, ".json").unlink(missing_ok=True)
         self._preview_path(preview_id, ".raw").unlink(missing_ok=True)
+        import shutil
+        for suffix in (".umif", ".source"):
+            path = self._preview_path(preview_id, suffix)
+            if path.is_dir(): shutil.rmtree(path)
 
     def _preview_path(self, preview_id: str, suffix: str) -> Path:
         if not re.fullmatch(r"[a-f0-9]{32}", preview_id):
@@ -894,7 +988,21 @@ class ImportService:
                 status_code=409,
             )
         parsed = data["parsed"]
-        package, _ = self._convert_to_umif(data["filename"], data["source_type"], raw, project_id)
+        if data["source_type"] == "claude":
+            from everos.umif.package import read_package
+            frozen = self.preview_dir / f"{preview_id}.umif"
+            try:
+                package = read_package(frozen)
+            except (OSError, ValueError) as exc:
+                raise ImportWorkflowError('PREVIEW_CORRUPTED', 'UMIF preview is unreadable.', status_code=409) from exc
+            snapshot_hashes = {
+                canonical_content_hash(package.manifest.model_dump(mode='json')),
+                hashlib.sha256(package.manifest.model_dump_json().encode()).hexdigest(),
+            }
+            if data.get('umif_snapshot_hash') not in snapshot_hashes:
+                raise ImportWorkflowError("PREVIEW_CORRUPTED", "UMIF preview snapshot changed.", status_code=409)
+        else:
+            package, _ = self._convert_to_umif(data["filename"], data["source_type"], raw, project_id)
         from everos.umif.package import write_package
         from everos.umif.validator import validate_package
         validation = validate_package(package)
@@ -919,12 +1027,23 @@ class ImportService:
                 os.fsync(handle.fileno())
             os.replace(temporary, target)
             write_package(package, umif_dir)
+            source_dir = self.preview_dir / f"{preview_id}.source"
+            if data.get('source_file_hashes') and not source_dir.is_dir():
+                raise ImportWorkflowError('PREVIEW_CORRUPTED', 'Original evidence is missing.', status_code=409)
+            if data["source_type"] == "claude" and source_dir.is_dir():
+                import shutil
+                shutil.copytree(source_dir, batch_dir / "source")
+                from .export_downloader import ExportDownloader
+                for name, expected in data.get('source_file_hashes', {}).items():
+                    actual = batch_dir / 'source' / self.safe_filename(name)
+                    if not actual.is_file() or ExportDownloader.checksum(actual) != expected:
+                        raise ImportWorkflowError('PREVIEW_CORRUPTED', 'Original evidence changed after preview.', status_code=409)
             disk_validation = validate_package(package, umif_dir)
             if not disk_validation.valid:
                 raise ImportWorkflowError("UMIF_VALIDATION_FAILED", ", ".join(disk_validation.errors))
             with self.store.connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                if data["source_type"] == "deepseek_harness":
+                if data["source_type"] in {"deepseek_harness", "claude", "chatgpt"}:
                     duplicate = connection.execute(
                         """SELECT id FROM import_batches
                            WHERE file_sha256 = ? AND project_id = ? AND parser_version = ?
@@ -944,21 +1063,21 @@ class ImportService:
                     )
                 duplicate_message_count = 0
                 duplicate_tool_event_count = 0
-                if data["source_type"] == "deepseek_harness":
+                if data["source_type"] in {"deepseek_harness", "claude", "chatgpt"}:
                     known_message_ids: dict[str, list[tuple[str, str]]] = {}
                     for row in connection.execute(
                         """SELECT m.source_message_id, m.content_sha256, b.parser_version
                            FROM normalized_messages m JOIN import_batches b ON b.id = m.batch_id
-                           WHERE m.source_message_id IS NOT NULL AND b.project_id = ?""",
-                        (project_id,),
+                           WHERE m.source_message_id IS NOT NULL AND b.project_id = ? AND b.source_type = ?""",
+                        (project_id, data["source_type"]),
                     ).fetchall():
                         known_message_ids.setdefault(row[0], []).append((row[1], row[2]))
                     known_tool_event_ids = {
                         row[0]: (row[1], row[2])
                         for row in connection.execute(
                             "SELECT source_event_id, content_sha256, source_content_sha256 FROM normalized_tool_events "
-                            "WHERE batch_id IN (SELECT id FROM import_batches WHERE project_id = ?)",
-                            (project_id,),
+                            "WHERE batch_id IN (SELECT id FROM import_batches WHERE project_id = ? AND source_type = ?)",
+                            (project_id, data["source_type"]),
                         ).fetchall()
                     }
                     for message in parsed["messages"]:
@@ -1061,6 +1180,7 @@ class ImportService:
                     *package.principals,
                     *package.sessions,
                     *package.events,
+                    *(r for rows in package.optional_records.values() for r in rows),
                 ):
                     connection.execute(
                         """INSERT INTO umif_record_map
@@ -1073,6 +1193,8 @@ class ImportService:
                     (record.record_type, record.source.get("native_id")): record
                     for record in package.events
                 }
+                if data["source_type"] == "claude":
+                    source_records.update({(record.record_type, record.record_id): record for record in package.events})
                 generic_records = {
                     (record.scope.get("session_id"), record.sequence): record
                     for record in package.events if record.record_type == "event.message"
@@ -1166,6 +1288,8 @@ class ImportService:
                             (target_id, "duplicate" if event["duplicate"] else "projected",
                              batch_id, record.record_id),
                         )
+                if data.get("source_job_id"):
+                    connection.execute("UPDATE import_jobs SET status='committed',batch_id=? WHERE id=?", (batch_id, data["source_job_id"]))
                 connection.execute(
                     """INSERT INTO import_events (id, batch_id, event_type)
                        VALUES (?, ?, 'archived')""",

@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .config import get_settings
-from .imports import ImportService
 from .adapter import EverOSHttpAdapter
-from .routes import candidates, exports, imports, memories, projects, system
+from .auth import OwnerSecurity, install_owner_security
+from .config import get_settings
+from .gateway_runtime import configure_gateway
+from .import_jobs import ImportJobManager
+from .imports import ImportService
+from .request_limits import ClaudeLocalUploadLimitMiddleware
+from .routes import (
+    candidates,
+    claude_content,
+    exports,
+    grants,
+    import_jobs,
+    imports,
+    knowledge_exports,
+    memories,
+    projects,
+    system,
+)
 from .storage import VaultStore
 
 
@@ -25,6 +41,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.everos_adapter = EverOSHttpAdapter(
         settings.everos_base_url, timeout_seconds=settings.everos_timeout_seconds
     )
+    configure_gateway(app, store, app.state.everos_adapter)
+    app.state.owner_security = OwnerSecurity(settings.data_dir)
     app.state.import_service = ImportService(
         store,
         max_file_bytes=settings.max_import_bytes,
@@ -32,7 +50,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_archive_files=settings.max_archive_files,
         max_archive_compression_ratio=settings.max_archive_compression_ratio,
     )
-    yield
+    app.state.import_jobs = ImportJobManager(store, app.state.import_service)
+    app.state.import_job_tasks = {}
+    app.state.import_job_semaphore = asyncio.Semaphore(2)
+    for job_id in app.state.import_jobs.recover():
+        import_jobs.launch_job(app, job_id)
+    try:
+        yield
+    finally:
+        # Wait for workers; cancelling to_thread cannot stop filesystem writes.
+        tasks = list(app.state.import_job_tasks.values())
+        if tasks:
+            app.state.import_jobs.stopping.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 app = FastAPI(
@@ -50,3 +80,11 @@ for route in (
 ):
     app.include_router(route, prefix="/api/v1")
 app.include_router(exports.router, prefix="/api/v1")
+
+app.include_router(import_jobs.router, prefix="/api/v1")
+app.include_router(claude_content.router, prefix="/api/v1")
+app.include_router(knowledge_exports.router, prefix="/api/v1")
+
+app.include_router(grants.router, prefix="/api/v1")
+app.add_middleware(ClaudeLocalUploadLimitMiddleware)
+install_owner_security(app)

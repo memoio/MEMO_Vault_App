@@ -132,6 +132,153 @@
         }
       }
     },
+    "/api/v1/memo-vault/candidates/extract": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Extract Candidates",
+        "operationId": "extract_candidates_api_v1_memo_vault_candidates_extract_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateExtractionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_CandidateExtractionResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memo-vault/candidates/{candidate_id}/publish": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Publish Approved Candidate",
+        "description": "Store approved text in its EverOS user-memory type; retries are idempotent.",
+        "operationId": "publish_approved_candidate_api_v1_memo_vault_candidates__candidate_id__publish_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovedCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_ApprovedCandidateData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memo-vault/candidates/{candidate_id}/lifecycle": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Apply Memory Lifecycle",
+        "description": "Correct, withdraw, or delete one exact Vault-published native record.",
+        "operationId": "apply_memory_lifecycle_api_v1_memo_vault_candidates__candidate_id__lifecycle_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryLifecycleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_MemoryLifecycleData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/memory/search": {
       "post": {
         "tags": [
@@ -180,7 +327,7 @@
           "memory"
         ],
         "summary": "Post Get",
-        "description": "Paginated listing over the requested ``memory_type``.",
+        "description": "List a scoped memory type, with exact Episode / Atomic Fact ID lookup.",
         "operationId": "post_get_api_v1_memory_get_post",
         "requestBody": {
           "content": {
@@ -341,6 +488,86 @@
                 }
               ],
               "title": "Category Id"
+            }
+          },
+          {
+            "name": "title_query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Title Query"
+            }
+          },
+          {
+            "name": "source_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Type"
+            }
+          },
+          {
+            "name": "file_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Type"
+            }
+          },
+          {
+            "name": "created_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created From"
+            }
+          },
+          {
+            "name": "created_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created To"
             }
           },
           {
@@ -648,6 +875,104 @@
         }
       }
     },
+    "/api/v1/knowledge/documents/{doc_id}/original": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Download Original Route",
+        "operationId": "download_original_route_api_v1_knowledge_documents__doc_id__original_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^d_[a-f0-9]{12,32}$",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "app_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/exports": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Export Knowledge Route",
+        "operationId": "export_knowledge_route_api_v1_knowledge_exports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/knowledge/topics/{topic_id}": {
       "get": {
         "tags": [
@@ -914,6 +1239,153 @@
         }
       }
     },
+    "/api/v2/memo-vault/candidates/extract": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Extract Candidates",
+        "operationId": "extract_candidates_api_v2_memo_vault_candidates_extract_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateExtractionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_CandidateExtractionResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/memo-vault/candidates/{candidate_id}/publish": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Publish Approved Candidate",
+        "description": "Store approved text in its EverOS user-memory type; retries are idempotent.",
+        "operationId": "publish_approved_candidate_api_v2_memo_vault_candidates__candidate_id__publish_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovedCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_ApprovedCandidateData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/memo-vault/candidates/{candidate_id}/lifecycle": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Apply Memory Lifecycle",
+        "description": "Correct, withdraw, or delete one exact Vault-published native record.",
+        "operationId": "apply_memory_lifecycle_api_v2_memo_vault_candidates__candidate_id__lifecycle_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryLifecycleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope_MemoryLifecycleData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/memory/search": {
       "post": {
         "tags": [
@@ -962,7 +1434,7 @@
           "memory"
         ],
         "summary": "Post Get",
-        "description": "Paginated listing over the requested ``memory_type``.",
+        "description": "List a scoped memory type, with exact Episode / Atomic Fact ID lookup.",
         "operationId": "post_get_api_v2_memory_get_post",
         "requestBody": {
           "content": {
@@ -1123,6 +1595,86 @@
                 }
               ],
               "title": "Category Id"
+            }
+          },
+          {
+            "name": "title_query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Title Query"
+            }
+          },
+          {
+            "name": "source_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Type"
+            }
+          },
+          {
+            "name": "file_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Type"
+            }
+          },
+          {
+            "name": "created_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created From"
+            }
+          },
+          {
+            "name": "created_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created To"
             }
           },
           {
@@ -1430,6 +1982,104 @@
         }
       }
     },
+    "/api/v2/knowledge/documents/{doc_id}/original": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Download Original Route",
+        "operationId": "download_original_route_api_v2_knowledge_documents__doc_id__original_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^d_[a-f0-9]{12,32}$",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "app_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/knowledge/exports": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Export Knowledge Route",
+        "operationId": "export_knowledge_route_api_v2_knowledge_exports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/knowledge/topics/{topic_id}": {
       "get": {
         "tags": [
@@ -1636,6 +2286,99 @@
           "status"
         ],
         "title": "AddResponseData"
+      },
+      "ApprovedCandidateData": {
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "title": "Memory Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "memory_id",
+          "scope",
+          "content"
+        ],
+        "title": "ApprovedCandidateData"
+      },
+      "ApprovedCandidateRequest": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "app_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "App Id"
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "User Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "atomic_fact",
+              "episode",
+              "profile"
+            ],
+            "title": "Memory Type",
+            "default": "atomic_fact"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "app_id",
+          "project_id",
+          "user_id",
+          "content"
+        ],
+        "title": "ApprovedCandidateRequest"
       },
       "Body_create_document_route_api_v1_knowledge_documents_post": {
         "properties": {
@@ -1848,6 +2591,144 @@
           "title"
         ],
         "title": "Body_replace_document_route_api_v2_knowledge_documents__doc_id__put"
+      },
+      "CandidateExtractionRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Batch Id"
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Session Id"
+          },
+          "app_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "App Id"
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "User Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Agent Id"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateMessageDTO"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "session_id",
+          "app_id",
+          "project_id",
+          "user_id",
+          "agent_id",
+          "messages"
+        ],
+        "title": "CandidateExtractionRequest"
+      },
+      "CandidateExtractionResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "extracted",
+            "title": "Status",
+            "default": "extracted"
+          },
+          "method": {
+            "type": "string",
+            "const": "local",
+            "title": "Method",
+            "default": "local"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count"
+          },
+          "candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Candidates"
+          },
+          "candidate_scope": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Candidate Scope"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_count",
+          "candidates",
+          "candidate_scope"
+        ],
+        "title": "CandidateExtractionResponse"
+      },
+      "CandidateMessageDTO": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 1000000,
+            "title": "Content"
+          },
+          "timestamp_ms": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Timestamp Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "content",
+          "timestamp_ms"
+        ],
+        "title": "CandidateMessageDTO"
       },
       "CascadeHealthBlock": {
         "properties": {
@@ -2254,6 +3135,55 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "original_available": {
+            "type": "boolean",
+            "title": "Original Available",
+            "default": false
+          },
+          "original_bytes": {
+            "type": "integer",
+            "title": "Original Bytes",
+            "default": 0
+          },
+          "derived_bytes": {
+            "type": "integer",
+            "title": "Derived Bytes",
+            "default": 0
           }
         },
         "type": "object",
@@ -2519,6 +3449,63 @@
         "title": "GetAgentSkillItem",
         "description": "Agent skill listing item — always agent-scoped."
       },
+      "GetAtomicFactItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "app_id": {
+            "type": "string",
+            "title": "App Id",
+            "default": "default"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": "default"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "parent_id": {
+            "type": "string",
+            "title": "Parent Id"
+          },
+          "fact": {
+            "type": "string",
+            "title": "Fact"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "timestamp",
+          "parent_id",
+          "fact"
+        ],
+        "title": "GetAtomicFactItem",
+        "description": "One user-owned Atomic Fact row."
+      },
       "GetData": {
         "properties": {
           "episodes": {
@@ -2527,6 +3514,13 @@
             },
             "type": "array",
             "title": "Episodes"
+          },
+          "atomic_facts": {
+            "items": {
+              "$ref": "#/components/schemas/GetAtomicFactItem"
+            },
+            "type": "array",
+            "title": "Atomic Facts"
           },
           "profiles": {
             "items": {
@@ -2563,7 +3557,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "GetData",
-        "description": "Body of ``response.data``.\n\nAll four arrays are always present so client code can iterate\nwithout branching on ``memory_type``; the route populates exactly\none."
+        "description": "Body of ``response.data``.\n\nAll five arrays are always present so client code can iterate\nwithout branching on ``memory_type``; the route populates exactly\none."
       },
       "GetEpisodeItem": {
         "properties": {
@@ -2645,12 +3639,13 @@
         "type": "string",
         "enum": [
           "episode",
+          "atomic_fact",
           "profile",
           "agent_case",
           "agent_skill"
         ],
         "title": "GetMemoryType",
-        "description": "The four kinds enumerated by ``/get``.\n\n``episode`` and ``profile`` are user-owned; ``agent_case`` and\n``agent_skill`` are agent-owned. Cross-pairs are rejected by\n:meth:`GetRequest._validate_owner_memory_type_pair`.\n\nNaming note: all four values use the bare kind name (no\n``_memory`` suffix) and match the LanceDB table name + everalgo\ntype name for that kind."
+        "description": "The five kinds enumerated by ``/get``.\n\n``episode``, ``atomic_fact``, and ``profile`` are user-owned;\n``agent_case`` and ``agent_skill`` are agent-owned. Cross-pairs are rejected by\n:meth:`GetRequest._validate_owner_memory_type_pair`.\n\nNaming note: all five values use the bare kind name (no\n``_memory`` suffix) and match the LanceDB table name + everalgo\ntype name for that kind."
       },
       "GetProfileItem": {
         "properties": {
@@ -2733,6 +3728,19 @@
           },
           "memory_type": {
             "$ref": "#/components/schemas/GetMemoryType"
+          },
+          "memory_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Id"
           },
           "page": {
             "type": "integer",
@@ -2890,6 +3898,39 @@
         ],
         "title": "HealthResponse",
         "description": "Response schema for ``GET /health``.\n\nDeclared as a Pydantic model (not ``dict``) so the generated\nOpenAPI schema carries the full field shape — ``capabilities``,\n``disabled_features`` and ``cascade`` are typed. A bare ``-> dict``\nreturn type degrades the OpenAPI response to\n``additionalProperties: true``, which robs clients (and codegen) of\nany structure to lean on."
+      },
+      "KnowledgeExportRequest": {
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "title": "App Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Doc Ids"
+          },
+          "include_derived": {
+            "type": "boolean",
+            "title": "Include Derived",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "app_id",
+          "project_id",
+          "doc_ids"
+        ],
+        "title": "KnowledgeExportRequest"
       },
       "KnowledgeSearchRequest": {
         "properties": {
@@ -3054,6 +4095,121 @@
           "session_id"
         ],
         "title": "MemorizeFlushRequest"
+      },
+      "MemoryLifecycleData": {
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "title": "Memory Id"
+          },
+          "lifecycle_status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn",
+              "deleted"
+            ],
+            "title": "Lifecycle Status"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "memory_id",
+          "lifecycle_status",
+          "revision",
+          "content"
+        ],
+        "title": "MemoryLifecycleData"
+      },
+      "MemoryLifecycleRequest": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "memory_id": {
+            "type": "string",
+            "maxLength": 180,
+            "minLength": 1,
+            "title": "Memory Id"
+          },
+          "app_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "App Id"
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "user_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "User Id"
+          },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "atomic_fact",
+              "episode",
+              "profile"
+            ],
+            "title": "Memory Type"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "correct",
+              "withdraw",
+              "delete"
+            ],
+            "title": "Action"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Revision"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "memory_id",
+          "app_id",
+          "project_id",
+          "user_id",
+          "memory_type",
+          "action",
+          "expected_revision"
+        ],
+        "title": "MemoryLifecycleRequest"
       },
       "MessageItemDTO": {
         "properties": {
@@ -3789,6 +4945,40 @@
         ],
         "title": "SuccessEnvelope[AddResponseData]"
       },
+      "SuccessEnvelope_ApprovedCandidateData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ApprovedCandidateData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "SuccessEnvelope[ApprovedCandidateData]"
+      },
+      "SuccessEnvelope_CandidateExtractionResponse_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CandidateExtractionResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "SuccessEnvelope[CandidateExtractionResponse]"
+      },
       "SuccessEnvelope_CategoryListResponse_": {
         "properties": {
           "request_id": {
@@ -3907,6 +5097,23 @@
           "data"
         ],
         "title": "SuccessEnvelope[KnowledgeSearchResponse]"
+      },
+      "SuccessEnvelope_MemoryLifecycleData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MemoryLifecycleData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "SuccessEnvelope[MemoryLifecycleData]"
       },
       "SuccessEnvelope_TopicDetailResponse_": {
         "properties": {

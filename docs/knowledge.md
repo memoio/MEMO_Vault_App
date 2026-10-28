@@ -26,6 +26,25 @@ curl -s -X POST http://localhost:8000/api/v2/knowledge/search \
   | jq '.data.hits[:3] | .[] | {topic_name, score}'
 ```
 
+## Export from the Vault console
+
+Open **导出中心 → Knowledge 文档** and choose one project. The list supports
+category, title, date, source and file-type filters with pagination. A
+single-document download returns the stored `_original` bytes. Selecting
+documents downloads a ZIP with `manifest.json` and
+`originals/<doc_id>/<filename>` by default. The optional checkbox adds
+EverOS-generated document summary and Topic Markdown under
+`processed/<doc_id>/`. The ZIP contains only the selected project's Knowledge
+documents; Vault-only archives, memories, Agent traces and indexes are excluded.
+
+The Core API exposes `GET /api/v2/knowledge/documents/{doc_id}/original` with
+`app_id` and `project_id` query parameters, and `POST /api/v2/knowledge/exports`
+with `app_id`, `project_id`, `doc_ids` and `include_derived`. The Vault console
+uses its Owner-session proxy at `/api/v1/knowledge-export/*`. Exports reject
+cross-project selections, missing originals, more than 100 documents or more
+than 512 MiB of selected files. The manifest records SHA-256 hashes and sizes
+without server filesystem paths.
+
 ## Three-tier hierarchy
 
 Knowledge is organized into three levels, from broadest to most granular:

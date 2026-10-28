@@ -121,6 +121,11 @@ class _KnowledgeDocumentRepo(RepoBase[KnowledgeDocumentRow]):
         page_size: int,
         sort_by: str,
         sort_order: str,
+        title_query: str | None = None,
+        source_type: str | None = None,
+        file_type: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
     ) -> DocumentListPage:
         """Return a paginated, optionally filtered slice of documents.
 
@@ -146,6 +151,18 @@ class _KnowledgeDocumentRepo(RepoBase[KnowledgeDocumentRow]):
         ]
         if category_id is not None:
             base_filter.append(KnowledgeDocumentRow.category_id == category_id)
+        if title_query:
+            escaped = title_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            base_filter.append(KnowledgeDocumentRow.title.ilike(f"%{escaped}%", escape="\\"))
+        if source_type:
+            base_filter.append(KnowledgeDocumentRow.source_type == source_type)
+        if file_type:
+            extension = file_type.lstrip(".").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            base_filter.append(KnowledgeDocumentRow.source_name.ilike(f"%.{extension}", escape="\\"))
+        if created_from:
+            base_filter.append(func.date(KnowledgeDocumentRow.created_at) >= created_from)
+        if created_to:
+            base_filter.append(func.date(KnowledgeDocumentRow.created_at) <= created_to)
 
         async with session_scope(self._factory) as s:
             count_stmt = (

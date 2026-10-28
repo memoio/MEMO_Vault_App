@@ -289,6 +289,12 @@ class DocumentOverviewItem:
     title: str
     topic_count: int
     created_at: datetime
+    source_name: str | None = None
+    source_type: str | None = None
+    updated_at: datetime | None = None
+    original_available: bool = False
+    original_bytes: int = 0
+    derived_bytes: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -368,7 +374,7 @@ async def get_document(
         DocumentNotFoundError: When no row exists for ``doc_id``.
     """
     row = await knowledge_document_repo.get_by_doc_id(doc_id)
-    if row is None:
+    if row is None or row.app_id != app_id or row.project_id != project_id:
         raise DocumentNotFoundError(f"Document {doc_id!r} not found")
 
     topic_rows = await knowledge_topic_sqlite_repo.get_topics_by_doc_id(doc_id)
@@ -408,6 +414,11 @@ async def list_documents(
     page_size: int = 20,
     sort_by: str = "created_at",
     sort_order: str = "desc",
+    title_query: str | None = None,
+    source_type: str | None = None,
+    file_type: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
 ) -> DocumentListResult:
     """Return a paginated document list with per-document topic counts.
 
@@ -423,6 +434,17 @@ async def list_documents(
     Returns:
         DocumentListResult with items, total, page, and page_size.
     """
+    filters = {}
+    if title_query:
+        filters["title_query"] = title_query
+    if source_type:
+        filters["source_type"] = source_type
+    if file_type:
+        filters["file_type"] = file_type
+    if created_from:
+        filters["created_from"] = created_from
+    if created_to:
+        filters["created_to"] = created_to
     page_result = await knowledge_document_repo.list_documents(
         app_id=app_id,
         project_id=project_id,
@@ -431,6 +453,7 @@ async def list_documents(
         page_size=page_size,
         sort_by=sort_by,
         sort_order=sort_order,
+        **filters,
     )
 
     doc_ids = [r.doc_id for r in page_result.rows]
@@ -439,6 +462,21 @@ async def list_documents(
     )
     topic_counts = dict(zip(doc_ids, counts, strict=True))
 
+    from everos.service.knowledge_export import resolve_original
+
+    originals = await asyncio.gather(
+        *[resolve_original(row.doc_id, app_id, project_id) for row in page_result.rows],
+        return_exceptions=True,
+    )
+    def derived_size(original: tuple[Path, str] | BaseException) -> int:
+        if isinstance(original, BaseException):
+            return 0
+        directory = original[0].parent.parent
+        return sum(
+            file.stat().st_size for file in directory.glob("*.md")
+            if file.is_file() and file.resolve().is_relative_to(directory.resolve())
+        )
+
     items = [
         DocumentOverviewItem(
             doc_id=r.doc_id,
@@ -446,8 +484,14 @@ async def list_documents(
             title=r.title,
             topic_count=topic_counts.get(r.doc_id, 0),
             created_at=r.created_at,
+            source_name=r.source_name,
+            source_type=r.source_type,
+            updated_at=r.updated_at,
+            original_available=not isinstance(originals[i], BaseException),
+            original_bytes=(originals[i][0].stat().st_size if not isinstance(originals[i], BaseException) else 0),
+            derived_bytes=derived_size(originals[i]),
         )
-        for r in page_result.rows
+        for i, r in enumerate(page_result.rows)
     ]
 
     return DocumentListResult(

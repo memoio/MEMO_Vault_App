@@ -110,6 +110,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.30.0,<2"]
+# Embedded CPU/GPU reranking. For CPU-only torch, install its CPU wheel first.
+local-rerank = ["sentence-transformers>=6.2,<7", "torch>=2.6"]
 multimodal = ["everalgo-parser[svg]>=0.2.1"]  # [svg] bundles cairosvg → SVG works by default
 # Native OpenTelemetry tracing export. Optional — EverOS never imports these
 # unless [observability] is enabled. Install with: pip install everos[otel]

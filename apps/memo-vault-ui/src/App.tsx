@@ -1,3 +1,10 @@
+import AuthorizationMcpPage from "./AuthorizationMcpPage";
+import { createPackDraft, type FixedDraft } from "./gatewayApi";
+import { text as authText } from "./authorization.zh";
+import ClaudeImport from "./ClaudeImport";
+import ChatGPTReview from "./ChatGPTReview";
+import KnowledgeExport from "./KnowledgeExport";
+import TrackInventory from "./TrackInventory";
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import {
   cancelPreview,
@@ -47,15 +54,16 @@ const pages = [
   { id: "imports", title: "导入", description: "安全检查、预览并归档原始记录。" },
   { id: "review", title: "候选审核", description: "查看来源证据，逐条确认进入 EverOS 正式记忆。" },
   { id: "library", title: "记忆库", description: "浏览已确认并写入 EverOS 的正式记忆。" },
-  { id: "pack", title: "Memory Pack", description: "从已确认的 EverOS 记忆中选择并生成可复制或下载的 Pack。" },
+  { id: "pack", title: "导出中心", description: "导出已确认的正式记忆或项目 Knowledge 原始文档。" },
+  { id: "authorization", title: authText.title, description: authText.description },
   { id: "adp", title: "ADP 导出 Beta", description: "ADP 导出功能将在后续阶段实现。" },
 ] as const;
-const wizardSteps = ["选择来源", "上传与检查", "解析预览", "抽取候选", "完成"];
+const wizardSteps = ["选择来源", "上传与检查", "解析预览", "抽取与审核", "完成"];
 const sources = [
   { id: "generic", title: "通用文件", detail: "Markdown / JSON / TXT / ZIP", available: true },
-  { id: "deepseek_harness", title: "DeepSeek Harness", detail: "session.v4.jsonl 或导出 ZIP · 对话与工具轨迹", available: true },
-  { id: "chatgpt", title: "ChatGPT 导出", detail: "待接入", available: false },
-  { id: "claude", title: "Claude 导出", detail: "后续支持", available: false },
+  { id: "deepseek_harness", title: "DeepSeek", detail: "网页导出 ZIP 或 Harness v4 会话", available: true },
+  { id: "chatgpt", title: "ChatGPT 导出", detail: "账户导出 ZIP · 对话与来源文件", available: true },
+  { id: "claude", title: "Claude 导出", detail: "多个本地 ZIP 一次导入 / Manifest JSON", available: true },
   { id: "agent", title: "Cursor / Agent 记录", detail: "后续支持", available: false },
   { id: "auto", title: "自动抓取", detail: "MVP 不支持", available: false },
 ] as const;
@@ -157,10 +165,12 @@ function MemoryPackPage({
   projects,
   projectLoadError,
   onRetryProjects,
+  onAuthorize,
 }: {
   projects: ProjectSpace[];
   projectLoadError: string | null;
   onRetryProjects: () => void;
+  onAuthorize: (draft: FixedDraft) => void;
 }) {
   const [selectedProjects, setSelectedProjects] = useState<string[] | null>(null);
   const [selectedKinds, setSelectedKinds] = useState<PackKind[]>(packKindOptions.map((item) => item.value));
@@ -177,7 +187,7 @@ function MemoryPackPage({
   const [confirmedAskIds, setConfirmedAskIds] = useState<string[]>([]);
   const [confirmEvidence, setConfirmEvidence] = useState(false);
   const [confirmTransfer, setConfirmTransfer] = useState(false);
-  const [deliveryAction, setDeliveryAction] = useState<"copy" | "download">("copy");
+  const [deliveryAction, setDeliveryAction] = useState<"copy" | "download" | "authorize">("copy");
   const [exportBusy, setExportBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const sequence = useRef(0);
@@ -275,7 +285,7 @@ function MemoryPackPage({
     setConfirmationOpen(false);
   }
 
-  async function performDelivery(action: "copy" | "download") {
+  async function performDelivery(action: "copy" | "download" | "authorize") {
     if (!packPreview || exportBusy || !selectedProjects?.length) return;
     setExportBusy(true);
     setPreviewError(null);
@@ -292,8 +302,14 @@ function MemoryPackPage({
         confirmed_ask_ids: confirmedAskIds,
         confirm_evidence: confirmEvidence,
         confirm_unrecoverable_transfer: confirmTransfer,
-        delivery_action: action,
+        delivery_action: action === "authorize" ? "copy" : action,
       };
+      if (action === "authorize") {
+        const draft = await createPackDraft(request);
+        setConfirmationOpen(false); setConfirmedAskIds([]); setConfirmEvidence(false); setConfirmTransfer(false);
+        onAuthorize(draft);
+        return;
+      }
       const result = await exportMemoryPack(request);
       // The server has consumed this delivery's confirmations. Clear them
       // before the browser-side clipboard or file operation can fail.
@@ -341,7 +357,7 @@ function MemoryPackPage({
     }
   }
 
-  function openConfirmation(action: "copy" | "download") {
+  function openConfirmation(action: "copy" | "download" | "authorize") {
     if (!packPreview || packPreview.included_count === 0) return;
     setDeliveredSnapshot(null);
     setDeliveryAction(action);
@@ -413,18 +429,19 @@ function MemoryPackPage({
           <div className="actions pack-delivery-actions">
             <button className="primary-button" disabled={!packPreview || packPreview.included_count === 0 || previewLoading || exportBusy} onClick={() => openConfirmation("copy")}>复制</button>
             <button className="secondary-button" disabled={!packPreview || packPreview.included_count === 0 || previewLoading || exportBusy} onClick={() => openConfirmation("download")}>下载</button>
+            <button className="secondary-button" disabled={!packPreview || !packPreview.included_count || previewLoading || exportBusy || !["none", "id"].includes(evidenceMode)} title={authText.noEvidenceExport} onClick={() => openConfirmation("authorize")}>{authText.authorizePack}</button>
           </div>
         </> : <div className="pack-preview-empty">{previewLoading ? "正在生成预览…" : previewError ? "预览读取失败；可重试。" : hasScope ? "当前没有可展示的 Pack 预览。" : "先选择项目空间和类型。"}</div>}
       </div>
 
       {confirmationOpen && packPreview ? <div className="pack-confirm-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmationOpen(false); }}>
         <section className="pack-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="pack-confirm-title">
-          <div className="pack-section-heading"><div><h2 id="pack-confirm-title">确认{deliveryAction === "copy" ? "复制" : "下载"}</h2><span>即将交付 {packPreview.included_count} 条记忆 · SHA-256 {packPreview.content_sha256.slice(0, 16)}…</span></div><button className="secondary-button" onClick={() => setConfirmationOpen(false)}>关闭</button></div>
+          <div className="pack-section-heading"><div><h2 id="pack-confirm-title">确认{deliveryAction === "authorize" ? authText.authorizePack : deliveryAction === "copy" ? "复制" : "下载"}</h2><span>即将交付 {packPreview.included_count} 条记忆 · SHA-256 {packPreview.content_sha256.slice(0, 16)}…</span></div><button className="secondary-button" onClick={() => setConfirmationOpen(false)}>关闭</button></div>
           <div className="pack-confirm-list"><strong>本次实际包含的条目</strong>{packPreview.items.filter((item) => item.included).map((item) => <p key={item.memory_id}>{memoryKindLabel(item.kind)} · 修订 {item.revision} · <code>{item.memory_id}</code></p>)}</div>
           {includedAskItems.length ? <fieldset className="pack-confirm-list"><legend>本次包含的 ask 记忆，请逐条确认</legend>{includedAskItems.map((item) => <label key={item.memory_id}><input type="checkbox" checked={confirmedAskIds.includes(item.memory_id)} onChange={(event) => setConfirmedAskIds((current) => event.target.checked ? [...current, item.memory_id] : current.filter((id) => id !== item.memory_id))} /><span>{memoryKindLabel(item.kind)} · <code>{item.memory_id}</code></span></label>)}</fieldset> : null}
           {format === "vault-memory/1" && (evidenceMode === "snippet" || evidenceMode === "full") ? <label className="pack-confirm-check"><input type="checkbox" checked={confirmEvidence} onChange={(event) => setConfirmEvidence(event.target.checked)} /><span>我确认本次 Pack 会包含与记忆匹配的来源摘录。</span></label> : null}
           <label className="pack-confirm-check"><input type="checkbox" checked={confirmTransfer} onChange={(event) => setConfirmTransfer(event.target.checked)} /><span>我了解交付后的内容无法从接收方处撤回。</span></label>
-          <div className="actions right"><button className="secondary-button" disabled={exportBusy} onClick={() => setConfirmationOpen(false)}>取消</button><button className="primary-button" disabled={exportBusy || !confirmTransfer || format === "vault-memory/1" && (evidenceMode === "snippet" || evidenceMode === "full") && !confirmEvidence || includedAskItems.some((item) => !confirmedAskIds.includes(item.memory_id))} onClick={() => void performDelivery(deliveryAction)}>{exportBusy ? "正在校验并生成…" : deliveryAction === "copy" ? "确认并复制" : "确认并下载"}</button></div>
+          <div className="actions right"><button className="secondary-button" disabled={exportBusy} onClick={() => setConfirmationOpen(false)}>取消</button><button className="primary-button" disabled={exportBusy || !confirmTransfer || format === "vault-memory/1" && (evidenceMode === "snippet" || evidenceMode === "full") && !confirmEvidence || includedAskItems.some((item) => !confirmedAskIds.includes(item.memory_id))} onClick={() => void performDelivery(deliveryAction)}>{exportBusy ? "正在校验并生成…" : deliveryAction === "authorize" ? authText.authorizePack : deliveryAction === "copy" ? "确认并复制" : "确认并下载"}</button></div>
         </section>
       </div> : null}
     </section>
@@ -442,6 +459,8 @@ function PackItemRow({ item, checked, onToggle }: { item: PackPreviewItem; check
 
 export default function App() {
   const [pageId, setPageId] = useState<PageId>("imports");
+  const [exportTab, setExportTab] = useState<'memory' | 'knowledge'>('memory');
+  const [authorizationDraft, setAuthorizationDraft] = useState<FixedDraft | null>(null);
   const [health, setHealth] = useState<VaultHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<ReviewCandidate[]>([]);
@@ -923,6 +942,11 @@ export default function App() {
       );
       setLibraryDetail(detail);
       setLibrarySelected(detail);
+      setLibraryMemories((current) => current.map((memory) => (
+        memory.id === detail.id && memory.project_id === detail.project_id
+          ? { ...memory, ...detail }
+          : memory
+      )));
       setShowMemoryEditor(false);
       setMemoryDraftNote("");
       refreshLibrary();
@@ -956,9 +980,8 @@ export default function App() {
     setMemoryActionBusy(true);
     setMemoryActionError(null);
     try {
-      const detail = await deleteLibraryMemory(libraryDetail.project_id, libraryDetail);
-      setLibraryDetail(detail);
-      setLibrarySelected(detail);
+      await deleteLibraryMemory(libraryDetail.project_id, libraryDetail);
+      closeLibraryDetail();
       refreshLibrary();
     } catch (reason) {
       setMemoryActionError(reason instanceof Error ? reason.message : "删除记忆失败。");
@@ -1031,8 +1054,12 @@ export default function App() {
           </div>
         </header>
 
-        {pageId === "pack" ? (
-          <MemoryPackPage projects={projects} projectLoadError={projectLoadError} onRetryProjects={retryProjects} />
+        {pageId === "authorization" ? (
+          <AuthorizationMcpPage projects={projects} draft={authorizationDraft} onOpenPack={() => setPageId("pack")} onDraftUsed={() => setAuthorizationDraft(null)} />
+        ) : pageId === "pack" ? (
+          <div className="export-center"><nav className="export-tabs" aria-label="导出类型"><button className={exportTab === 'memory' ? 'selected' : ''} onClick={() => setExportTab('memory')}>Memory Pack</button><button className={exportTab === 'knowledge' ? 'selected' : ''} onClick={() => setExportTab('knowledge')}>Knowledge 文档</button></nav>
+            {exportTab === 'memory' ? <MemoryPackPage projects={projects} projectLoadError={projectLoadError} onRetryProjects={retryProjects} onAuthorize={draft => { setAuthorizationDraft(draft); setPageId("authorization"); }} /> : <KnowledgeExport projects={projects} />}
+          </div>
         ) : pageId === "library" ? (
           <section className="workspace library-workspace">
             <aside className="library-project-sidebar" aria-label="记忆库项目空间">
@@ -1120,7 +1147,7 @@ export default function App() {
                   const confirmable = canConfirmCandidate(candidate);
                   const draft = candidateChanges(candidate);
                   const supportedKind = draft.kind === "episode" || draft.kind === "preference";
-                  const originLabel = candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
+                  const originLabel = candidate.metadata?.origin_kind === "platform_summary" ? "Claude platform summary" : candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
                   return <article className={`candidate-card ${candidate.id === selectedCandidateId ? "selected" : ""}`} key={candidate.id} onClick={() => setSelectedCandidateId(candidate.id)}>
                     <div className="candidate-heading">
                       <label className="candidate-check"><input type="checkbox" aria-label={`选择候选 ${candidate.id}`} disabled={candidateBusy !== null || candidate.status !== "pending" || !confirmable || !supportedKind} checked={checkedCandidates.includes(candidate.id)} onChange={(event) => setCheckedCandidates((current) => event.target.checked ? [...current, candidate.id] : current.filter((id) => id !== candidate.id))} /></label>
@@ -1139,7 +1166,7 @@ export default function App() {
                   const validEvidence = candidate.evidence_status === "valid";
                   const confirmable = canConfirmCandidate(candidate);
                   const supportedKind = draft.kind === "episode" || draft.kind === "preference";
-                  const originLabel = candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
+                  const originLabel = candidate.metadata?.origin_kind === "platform_summary" ? "Claude platform summary" : candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
                   return <>
                     <h2>候选详情</h2>
                     <p className="evidence-source">{originLabel} · {candidate.namespace}{candidate.origin === "manual" ? ` · 创建于 ${formatDateTime(candidate.created_at)}` : ` · ${candidate.filename}`}<br /><code>{candidate.id}</code></p>
@@ -1208,9 +1235,17 @@ export default function App() {
                     <p>MD 可使用“## User / ## Assistant”标题分隔消息；没有明确角色标记的文本会作为一条消息导入。文件内容只作为文本显示，不会执行脚本。</p>
                   </details>
                 ) : null}
+                {source === "chatgpt" ? (
+                  <details className="guide">
+                    <summary>ChatGPT 导入说明</summary>
+                    <p>上传 ChatGPT 账户导出的原始 ZIP。仅当前分支的可见用户与助手正文参与候选抽取；其他分支仍保留在 UMIF 和 Vault 中。</p>
+                    <p>隐藏推理、账号设置和未随 ZIP 提供的附件不会进入记忆或 Knowledge。所有候选仍需人工审核。</p>
+                  </details>
+                ) : null}
                 {source === "deepseek_harness" ? (
                   <details className="guide">
-                    <summary>DeepSeek Harness 导入说明</summary>
+                    <summary>DeepSeek 导入说明</summary>
+                    <p>支持网页端账户导出的 ZIP（包含 user.json 和 conversations.json）。有明确文本的请求和回复用于候选抽取；无法确定当前分支的分叉消息保留归档，暂不参与抽取。</p>
                     <p>支持 Harness v4 的 <code>session.v4.jsonl</code> 或仅含该文件的导出 ZIP。可见的 user/assistant 文本进入标准记忆抽取；工具调用和结果作为独立轨迹归档，当前不会进入记忆抽取。</p>
                     <p>reasoning、工具调用块和 Harness 注入上下文不会作为对话导入。工具参数及结果仅在解析预览中显示脱敏、截断后的内容。</p>
                   </details>
@@ -1219,16 +1254,17 @@ export default function App() {
               </div>
             ) : null}
 
-            {step === 1 ? (
+            {source === "claude" && step > 0 ? <ClaudeImport projects={projects} initialProjectId={projectId} onBack={clearWorkflow} step={step} onStepChange={setStep} /> : null}
+            {step === 1 && source !== "claude" ? (
               <div className="import-card">
                 <h2>上传与检查</h2>
                 <p className="subtle">
-                  {source === "deepseek_harness" ? "支持 DeepSeek Harness v4 .jsonl 或 ZIP" : "支持 .json、.md、.txt 和 ZIP"}；单文件最大 {formatSize(health?.max_import_bytes ?? 100 * 1024 * 1024)}。
+                  {source === "chatgpt" ? "支持 ChatGPT 账户导出的原始 ZIP" : source === "deepseek_harness" ? "支持 DeepSeek 网页导出 ZIP、Harness v4 .jsonl 或 ZIP" : "支持 .json、.md、.txt 和 ZIP"}；单文件最大 {formatSize(health?.max_import_bytes ?? 100 * 1024 * 1024)}。
                   ZIP 解压后最多 {formatSize(health?.max_archive_unpacked_bytes ?? 50 * 1024 * 1024)}、
                   {health?.max_archive_files ?? 100} 个条目，不支持嵌套压缩包。
                 </p>
                 <input
-                  accept={source === "deepseek_harness" ? ".jsonl,.zip,application/jsonl,application/x-ndjson,application/zip" : ".json,.md,.txt,.zip,application/json,text/plain,text/markdown,application/zip"}
+                  accept={source === "chatgpt" ? ".zip,application/zip" : source === "deepseek_harness" ? ".jsonl,.zip,application/jsonl,application/x-ndjson,application/zip" : ".json,.md,.txt,.zip,application/json,text/plain,text/markdown,application/zip"}
                   className="visually-hidden"
                   onChange={(event) => {
                     const selected = event.target.files?.[0];
@@ -1266,7 +1302,7 @@ export default function App() {
               </div>
             ) : null}
 
-            {step === 2 && preview ? (
+            {source !== "claude" && step === 2 && preview ? (
               <div className="import-card">
                 <div className="card-heading">
                   <div><h2>解析预览</h2><p className="subtle">{preview.filename} · {formatSize(preview.file_size)}</p></div>
@@ -1284,6 +1320,7 @@ export default function App() {
                   <div><strong>{preview.duplicate_message_count}</strong><span>重复消息（保留来源）</span></div>
                   <div><strong>{preview.duplicate_tool_event_count}</strong><span>重复轨迹事件</span></div>
                 </div>
+                {source === "chatgpt" ? <p className="subtle">当前分支可参与记忆抽取：{preview.import_report?.counts?.memory_input_messages ?? 0} 条。其他可见分支保留在 Vault，不参与抽取。</p> : null}
                 <p className="subtle">UMIF 包 ID：<code>{preview.umif_package_id}</code></p>
                 {preview.umif_warnings.length ? <div className="notice warning">{preview.umif_warnings.join("；")}</div> : null}
                 {preview.warnings.length || preview.source_event_conflict_count ? (
@@ -1293,7 +1330,7 @@ export default function App() {
                   </div>
                 ) : null}
                 {Object.keys(preview.skipped_event_counts).length ? (
-                  <p className="subtle">未导入的 Harness 事件：{Object.entries(preview.skipped_event_counts).map(([type, count]) => `${type} ${count}`).join(" · ")}</p>
+                  <p className="subtle">保留在原文件、未参与对话抽取的内容：{Object.entries(preview.skipped_event_counts).map(([type, count]) => `${type} ${count}`).join(" · ")}</p>
                 ) : null}
                 <div className="hash-line">SHA-256 <code>{preview.raw_file_hash}</code></div>
                 <h3>消息预览 <span className="subtle">最多展示前 20 条</span></h3>
@@ -1365,11 +1402,13 @@ export default function App() {
               </div>
             ) : null}
 
-            {step === 3 && batch ? (
+            {source !== "claude" && step === 3 && batch ? (
               <div className="import-card">
                 <div className="notice success">✓ 原文已归档：{batch.conversation_count} 个会话 / {batch.message_count} 条消息。关闭此页也不会丢失数据。</div>
-                <h2>抽取候选</h2>
+                <h2>抽取与审核</h2>
                 <p className="subtle">原文归档与 EverOS 抽取是分开的。抽取失败不会影响已归档文件。</p>
+                <TrackInventory batchId={batch.batch_id} />
+                {source === "chatgpt" ? <ChatGPTReview batchId={batch.batch_id} /> : null}
                 <div className="extract-options">
                   <button className="extract-option" disabled={busy} onClick={() => void runExtraction()}>
                     <strong>{busy ? "正在请求本地 EverOS…" : "立即使用本地 EverOS 抽取"}</strong>
@@ -1388,7 +1427,7 @@ export default function App() {
               </div>
             ) : null}
 
-            {step === 4 && batch ? (
+            {source !== "claude" && step === 4 && batch ? (
               <div className="import-card completion-card">
                 <div className={`completion-mark ${extractState === "done" ? "success-mark" : ""}`}>{extractState === "done" ? "✓" : "⌂"}</div>
                 <h2>{extractResult?.status === "deferred_tool_messages" ? "工具轨迹暂未抽取" : extractResult?.status === "unsupported_role_messages" ? "没有可抽取的聊天消息" : extractResult?.status === "no_new_messages" ? "没有新的消息需要抽取" : extractState === "done" ? "本地抽取已完成" : "原文已安全归档"}</h2>

@@ -1,5 +1,11 @@
 # Connect MCP clients
 
+> This page describes the core EverOS MCP integration. For scoped Vault grants,
+> owner authorization and policy-governed Pack delivery, use the separate
+> [Vault Authorization & MCP guide](memo-vault-authorization.md). Its
+> `everos vault-mcp` adapter calls the external Vault gateway on port 8766; the
+> core MCP configuration below does not inherit Vault grants.
+
 EverOS exposes its memory to MCP (Model Context Protocol) clients — Claude Code, Codex,
 Claude Desktop, Cursor and any other MCP host — through the official **everos-mcp**
 server: [PyPI `everos-mcp`](https://pypi.org/project/everos-mcp/) ·

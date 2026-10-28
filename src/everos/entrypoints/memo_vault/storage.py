@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS umif_record_map (
     PRIMARY KEY(batch_id, source_record_id)
 );
 
+CREATE TABLE IF NOT EXISTS import_content_reviews (
+    batch_id TEXT NOT NULL REFERENCES import_batches(id),
+    source_record_id TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('knowledge', 'vault_only', 'exclude')),
+    reviewer_id TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(batch_id, source_record_id)
+);
+
 CREATE TABLE IF NOT EXISTS normalized_messages (
     id TEXT PRIMARY KEY,
     batch_id TEXT NOT NULL REFERENCES import_batches(id),

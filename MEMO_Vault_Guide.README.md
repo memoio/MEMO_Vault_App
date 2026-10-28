@@ -1,28 +1,30 @@
 # EverOS 项目结构与开发上手指南
 
-> 盘点基准：当前工作区代码，2026-10-23；包含尚未提交的实现。此分支正在开发 MEMO Vault 相关能力；本指南描述工作区现状，不代表这些改动已经合并或发布。
+> 盘点基准：当前工作区代码，2026-10-28；包含尚未提交的实现。本指南描述工作区现状，不代表这些改动已经合并、推送或发布。
 
 ## 1. 项目是什么
 
-EverOS 是供 AI Agent 和对话应用使用的本地优先记忆框架。它负责从对话中整理记忆、保存记忆并在之后检索。正式记忆以 Markdown 文件为准，SQLite 保存运行状态，LanceDB 保存可重建的搜索索引。
+EverOS 是本地优先的记忆框架，负责生成、保存和检索记忆。正式记忆以 Markdown 文件为准，SQLite 保存运行状态，LanceDB 保存可重建的搜索索引。
 
-当前工作区还包含 **MEMO Vault**：一个本地记忆管理界面，让用户导入对话、查看和审核候选记忆、管理已确认记忆，并将选定的记忆导出为 Memory Pack。它由 React 前端和独立的 FastAPI 服务组成，通过 HTTP 调用 EverOS。
+MEMO Vault 是本工作区中的本地记忆管理应用：用户导入不同平台的导出文件，审核候选记忆，管理正式记忆，并通过文件导出或授权外部应用使用选定内容。当前系统由前端、EverOS 核心 API、Vault 本地管理 API 和可选的外部网关组成：
 
 ```text
-浏览器中的 MEMO Vault（React / Vite，默认 5173 端口）
-                 │ /api/*
-MEMO Vault API（FastAPI，默认 8765 端口）
-  ├─ SQLite：项目、导入批次、消息、候选关联和审计记录
-  ├─ 证据归档：原始导入文件
-  └─ EverOSAdapter：调用 EverOS API
-                 │
-EverOS API（FastAPI，默认 8000 端口）
-  ├─ Markdown：正式记忆
-  ├─ SQLite：系统状态
-  └─ LanceDB：搜索索引
+浏览器 / MEMO Vault 前端（5173）
+        │ 本地所有者会话
+        ▼
+Vault 管理 API（8765） ── 原文件、UMIF、候选、授权与审计
+        │                        │ 共用 Vault 数据目录
+        ▼                        ▼
+EverOS 核心 API（8000） ◄── 外部网关（8766，需启用）
+        │                        ▲
+        ▼                        │ 外部授权凭据
+正式记忆 / Knowledge         外部 HTTP 客户端或本地 MCP 适配器
+        │
+        ▼
+Ollama 或其他已配置模型服务
 ```
 
-这两套 API 是两个独立服务。MEMO Vault 的 `/api/v1` 和 EverOS 的 `/api/v1` 路径前缀相同，但默认监听不同端口。
+管理 API 与外部网关是两个独立服务：前者负责导入、审核和授权管理；后者只开放受授权约束的读取接口。端口、启动和首次连接方式见第 7 节。
 
 ## 2. 仓库根目录
 
@@ -52,7 +54,8 @@ EverOS API（FastAPI，默认 8000 端口）
 | 目录 | 用通俗的话说 | 常见内容 |
 |---|---|---|
 | `entrypoints/api/` | EverOS 的 HTTP 接口入口 | FastAPI 应用、健康检查、记忆、知识库和其他 API 路由。 |
-| `entrypoints/memo_vault/` | MEMO Vault 的独立后端 | Vault FastAPI 应用、导入解析、UMIF 投影、项目与候选管理、记忆库、Memory Pack、EverOS 适配器。 |
+| `entrypoints/memo_vault/` | MEMO Vault 管理 API 和外部网关 | 平台解析、UMIF 投影、导入任务、记忆库、导出、所有者会话、授权与网关路由。 |
+| `entrypoints/memo_vault_mcp/` | Vault 的 MCP 适配器 | 将被授权的网关操作提供给本地 stdio MCP 客户端。 |
 | `umif/` | 各来源共用的中间数据格式 | 记录模型、稳定 ID、包读写和导入前校验；不依赖 DeepSeek 或 Vault 数据库。 |
 | `entrypoints/cli/` | 命令行入口 | `everos` 命令及其子命令。 |
 | `entrypoints/tui/` | 终端界面入口 | 文本界面和交互演示。 |
@@ -70,12 +73,14 @@ EverOS API（FastAPI，默认 8000 端口）
 
 | 功能 | 优先阅读的文件（相对于仓库根目录） |
 |---|---|
-| 导入与 UMIF | `entrypoints/memo_vault/imports.py`、`deepseek_harness.py`、`umif_projection.py`（均在 `src/everos/` 下），以及 `src/everos/umif/`。 |
+| 导入与 UMIF | `src/everos/entrypoints/memo_vault/imports.py`、`deepseek_harness.py`、`deepseek_web.py`、`chatgpt_export.py`、`claude_export.py`、`claude_manifest.py`、`import_jobs.py`、`umif_projection.py`，以及 `src/everos/umif/`。 |
 | 候选抽取 | `src/everos/entrypoints/api/routes/memo_vault_candidates.py`、`src/everos/service/memo_vault_candidates.py` 与 `memo_vault_candidate_prompts.py`。 |
 | 人工候选与审核 | `src/everos/entrypoints/memo_vault/routes/candidates.py`、`contracts.py`、`storage.py`。 |
 | 来源片段与定位 | `src/everos/entrypoints/memo_vault/evidence.py`；候选来源接口和记忆库共用。 |
 | 正式记忆与生命周期 | `src/everos/entrypoints/memo_vault/library.py`、`adapter.py`，以及 `src/everos/service/memo_vault_lifecycle.py`。 |
-| Memory Pack | `src/everos/entrypoints/memo_vault/memory_pack.py`、`routes/exports.py`、`library.py`。 |
+| Memory Pack 和 Knowledge 导出 | `src/everos/entrypoints/memo_vault/memory_pack.py`、`routes/exports.py`、`routes/knowledge_exports.py`、`src/everos/service/knowledge_export.py`。 |
+| 授权与外部网关 | `src/everos/entrypoints/memo_vault/auth.py`、`routes/grants.py`、`external_app.py`、`routes/external_gateway.py`、`src/everos/service/memo_vault_grants.py`、`memo_vault_gateway.py` 和 `src/everos/infra/memo_vault_gateway.py`。 |
+| MCP 与启动命令 | `src/everos/entrypoints/memo_vault_mcp/server.py`、`src/everos/entrypoints/cli/commands/vault.py`。 |
 
 上表中未单独写出完整路径的文件名，与同一格前面的文件位于同一目录。
 
@@ -84,92 +89,104 @@ EverOS API（FastAPI，默认 8000 端口）
 `apps/memo-vault-ui/` 是独立的网页前端：
 
 - `src/App.tsx`：页面导航和导入、候选审核、记忆库、Memory Pack 等页面流程。
-- `src/api.ts`：浏览器调用后端的 API 函数和数据类型。
+- `src/api.ts`、`src/gatewayApi.ts`：管理 API 与网关 API 的调用函数和数据类型。
+- `src/ClaudeImport.tsx`、`src/ChatGPTReview.tsx`、`src/TrackInventory.tsx`：平台专属导入、来源内容审核与清单。
+- `src/AuthorizationMcpPage.tsx`、`src/OwnerSessionGate.tsx`：授权管理页面和本地所有者连接界面。
+- `src/KnowledgeExport.tsx`：Knowledge 原文件和 ZIP 导出。
 - `src/styles.css`：页面样式。
 - `src/main.tsx`：React 应用启动入口。
 - `vite.config.ts`：开发时把 `/api/*` 请求转发给本机 8765 端口的 Vault API。
 
-## 4. MEMO Vault 新需求与当前代码状态
+## 4. 功能现状与使用流程
 
-以下状态按当前工作区源代码判断。“接口已声明”不一定意味着功能完整；例如 ADP Export 的路由存在，但处理函数仍返回未实现错误。
+以下依据当前工作区实现整理，部分文件尚未提交。代码存在表示对应流程已实现，不表示所有导出样本或客户端版本均已完成验收。
 
-| 功能 | 当前代码中的职责和状态 |
+| 功能 | 当前能力与边界 |
 |---|---|
-| 导入与归档 | 已实现预览、文件安全检查、重复检测、确认归档和抽取请求。通用格式支持 JSON、Markdown、TXT 和受限 ZIP；DeepSeek Harness v4 支持直接导入 `session.v4.jsonl` 或仅含该文件的安全 ZIP。两条路径先转换成 UMIF 并校验，再投影到 Vault；预览可查看记录数、校验摘要和来源事件冲突，冲突会阻止归档。原文件与 UMIF 包一起保留，抽取失败不会删除它们。UMIF 目前是内部转换与归档格式，不等于已开放任意 UMIF 包上传入口。 |
-| 候选抽取与中文输出 | 按 MemCell 生成情节（Episode）和画像（Profile）草稿，显式使用中文提示语。画像只读取用户消息，要求证据能匹配用户原文，过滤缺少中文、琐碎或重复的结果；当前不是调用独立偏好抽取函数的流程。抽取本身不写入正式记忆。 |
-| 候选审核 | 已有列表筛选、编辑、逐条确认/拒绝及前端批量审核。当前界面只提供情节、画像两类；画像在候选契约中仍用 `kind=preference`，新候选的实际 `memory_type=profile`。历史事实、决策、待办等值仍有兼容逻辑，不代表界面继续开放这些类型。 |
-| 人工新增 | 可填写情节或画像、项目空间、长期/30 天/90 天有效期、外发策略及正文，保存后进入待审核列表；确认后才发布到 EverOS，有效期从确认时起算。保留 `origin=manual`、`evidence_kind=human_authored` 标记，不伪造原文件或对话证据，也不要求导入来源校验。 |
-| 来源证据与原对话 | 新抽取保存有序消息、字符范围和输入哈希，展示精确输入片段（`exact_input`）；旧数据回退为关联消息（`linked_messages`）。候选弹窗和记忆库详情共用来源片段及按当前正文计算的关键位置，可展开完整归档聊天并定位。原文件读取检查安全路径及 SHA-256；没有匹配摘录不等于来源丢失。当前关键位置使用词面匹配，未接入语义召回。 |
-| 记忆库 | 已有正式记忆列表、搜索、详情、修正、撤销和删除标记相关接口。默认从 EverOS 正式记忆读取，再结合 Vault 的项目范围和生命周期信息展示。 |
-| **Memory Pack 导出** | **已实现预览与导出。** 用户可按项目空间、记忆类型（事实、情节、画像）和近似 token 预算选择内容；格式支持 Markdown 或 `vault-memory/1` JSON。Markdown 只输出记忆正文；JSON 可选择不带证据、仅证据 ID 或带匹配摘录。只有已确认的 EverOS 正式记忆可进入 Pack；`deny` 项被排除，`ask` 项需要逐条选择并在交付前确认。服务端会重新核对预览快照，提示预算排除项；含来源摘录时要求确认，复制或下载前也要求确认内容交付后无法撤回。导出记录包含范围、格式、版本和内容哈希等信息。 |
-| ADP Export Beta | 前端展示 Beta 入口，后端有 3 条 API 路由，但当前处理函数仍调用 `not_implemented`，不能视为已可导出。 |
-| 账号、多用户与完整加密 | 方案中有相关安全和产品目标；当前代码仍是单机本地 Vault 身份，不应描述成已支持多账号、登录隔离或完整加密保险箱。 |
-| 外部 API/MCP 交付、多平台连接与自动抓取 | 当前 Pack 可经本地预览/导出接口复制或下载；面向外部客户端的授权交付 API/MCP 仍是提案，没有客户端凭证或授权包注册表。EverOS 既有 MCP 集成不能视为 Vault 授权导出。其他部分来源仍未开放自动同步。 |
+| 导入与归档 | 前端开放通用文件、DeepSeek Harness、ChatGPT、Claude 四个来源。导入前校验、预览，确认后保留原文件、UMIF 包与投影记录。归档和候选抽取是两个动作。 |
+| UMIF | 各来源转换到统一记录格式，保留来源标识、时间、内容和路由信息，并校验引用与文件；它是内部适配与归档格式，不是 LLM，也不是正式记忆。 |
+| 候选抽取 | 会话消息按 MemCell 组织后生成 Episode 和可能存在的画像候选；画像以用户消息为依据。候选抽取有中文输出约束，结果仍需核对；个别单元的画像抽取失败可以跳过，不保证每次都有画像。 |
+| 候选审核 | 可查看来源、编辑、确认或拒绝候选，也可人工新增情节或画像。人工新增带人工来源标记，不伪造原对话；只有确认后才写入 EverOS。 |
+| 来源与证据 | 原始文件保留用于追溯；来源消息、MemCell 输入片段和关键位置帮助核对候选和正式记忆。当前关键位置以词面匹配为主，不能视为对 LLM 总结真实性的证明。 |
+| 正式记忆库 | 查看、搜索、修正、撤销或删除正式记忆；关联 Vault 保存的项目范围、来源和生命周期信息。 |
+| Memory Pack | 从正式记忆按项目、类型和预算预览并导出 Markdown 或 `vault-memory/1` JSON；`deny` 不外发，`ask` 需要逐条选择并确认。导出前重新检查快照。 |
+| Knowledge 与导出中心 | 经用户批准的来源文档可投递到项目 Knowledge；导出中心支持选择已进入 Knowledge 的原文件，单个下载或打包 ZIP，可选择附带摘要及 Topic Markdown。仅归档在 Vault 的文件不会自动列入 Knowledge 导出。 |
+| 授权与管理 | 所有者管理外部授权、凭据轮换和撤销，查看审计并暂停或开启外部访问。授权只在指定项目、类型、操作和期限内生效。 |
+| 独立网关与 MCP | 本地网关提供受授权限制的 HTTP 读取；可选的 stdio MCP 适配器将允许的工具暴露给 AI 客户端。现有 EverOS 核心 MCP 与此 Vault 授权适配器是两套入口。 |
+| 尚未开放的能力 | Cursor / Agent 专用导入和自动抓取在界面不可用；ADP Export 有 3 个占位接口，尚未实现。当前也没有远程 HTTP MCP/OAuth、云交付、多账号隔离或加密保险箱。 |
 
-**文档与代码有时间差。** `MEMO_VAULT_MVP_DEVELOPMENT_PLAN_V4.zh-CN.md` 和 `apps/memo-vault-ui/README.md` 描述的基线较早，其中把候选审核、记忆库或 Memory Pack 标记为规划中；当前工作区对应路由、页面和服务代码已经增加。本指南以代码为现状依据，同时保留上述尚未实现的边界。
+### 三个专用解析器
 
-### 导入到正式记忆的实际流程
+| 来源 | 上传什么 | 解析后如何处理 | 主要限制 |
+|---|---|---|---|
+| DeepSeek | Harness v4 的 `session.v4.jsonl` 或仅含该文件的 ZIP；网页端账户导出 ZIP，包含 `user.json` 和 `conversations.json`。 | 自动区分两种格式并转换为 UMIF。Harness 识别消息和工具轨迹；网页导出按 REQUEST/RESPONSE 还原用户与助手消息，原 ZIP 保留。 | 思考、搜索和文件片段不作为聊天记忆抽取。网页导出未指定当前分支时，分叉后的消息归档但不参与抽取，预览给出提示；系统不猜测活跃分支。其他未知导出格式未承诺兼容。 |
+| ChatGPT | 账户导出 ZIP，包含 `conversations.json`。 | 沿 `current_node` 和 `parent` 识别当前分支；符合条件的用户/助手文本可参与抽取。其他可见分支保留但不参与抽取；能明确定位到的附件可留待审核并批准进入 Knowledge。 | `is_do_not_remember` 会阻止会话进入抽取；隐藏思考、未知类型保留在原 ZIP，不作为聊天正文抽取。当前不提供账号登录或在线下载。 |
+| Claude | 同一次导出的多个本地 ZIP 一次选齐；也可上传 Manifest，让服务下载仍可访问的链接。 | 多个 ZIP 合并为一个导入任务和 UMIF 包。会话走候选抽取；Claude 已保存的记忆作为平台摘要单独编辑审核；项目文档由用户决定是否批准进入 Knowledge。 | 本地 ZIP 可选 Manifest 核对文件名；不带 Manifest 时需要用户确认选齐。多个来源项目映射到同一目标项目需确认；过期链接可补交原文件名的 ZIP。不是自动按来源创建多个目标项目。 |
 
-1. 文件预览：通用导入或 DeepSeek Harness 适配器转换成 UMIF，检查结构、引用、文件哈希及重复/冲突，再生成 Vault 预览。
-2. 确认归档：保存原文件、UMIF 包及标准化消息、独立工具轨迹。归档成功与抽取成功是两个状态；可先归档、稍后抽取。
-3. 请求抽取：Vault 按会话读取非重复且 `memory_input=1` 的消息，调用 EverOS 的候选抽取接口。DeepSeek 保留所有已解析的可见 user/assistant 消息供回看，但仅用户消息和每轮最后一条符合条件的助手回复参与抽取；若该轮最后一条助手消息没有可见文本或含工具调用，该轮不纳入助手回复。`reasoning` 不转换成对话，工具调用/结果另存轨迹。
-4. 划分 MemCell：先按约 2,200 tokens、最多 20 条消息分块，单条长消息按约 1,400 tokens 切片并保留字符偏移，再做话题/时间边界检测。Episode 使用该单元；Profile 只使用其中的用户片段及可匹配原话证据。Profile 的格式或 LLM 错误会跳过当前单元的画像并保留已生成情节，不应据此认为每批都会产生画像。
-5. 人工审核：核对来源、改写正文并设置项目、有效期和外发策略；确认后才调用 EverOS 发布。人工新增从审核队列开始，不经过文件导入与抽取。
-6. 管理与导出：记忆库读取 EverOS 正式正文，结合 Vault 保存的来源及生命周期展示。修正、撤销、删除后，后续 Pack 会重新读取并检查状态；已交付的内容无法收回。
+通用 Markdown、TXT、JSON 和受限 ZIP 走通用解析路径。没有对话角色结构的普通文本当前按用户消息处理；尚未将所有通用文件自动当作 Knowledge 文档生成 Topic。
 
-原文件可用、输入片段可还原和关键句已定位是三个不同状态，均不等于机器已核实记忆内容正确。升级解析器后的行为不会自动回写旧批次或旧候选。
+### 从导入到使用的共同流程
+
+1. 在“导入”选择来源和目标项目，上传文件；系统检查文件、解析来源、转换 UMIF 并提供预览。来源清单区分对话、Agent 轨迹、Knowledge、平台声明及仅保留的原文件内容。
+2. 确认预览后归档。原文件、规范化记录及 UMIF 包保留在 Vault；Claude 任务支持查看进度、重试和恢复。抽取失败不会让已归档原文件消失。
+3. 对可参与记忆抽取的消息，Vault 调用 EverOS 候选抽取。消息按约 2,200 tokens、最多 20 条预分块，长消息按约 1,400 tokens 切片，随后检测 MemCell 边界；具体结果受模型和内容影响。工具轨迹不会自动生成 Agent Case 或 Skill。
+4. 在“候选审核”核对正文与来源，可修改、拒绝或确认；确认后才进入正式记忆库。Claude 平台摘要仍标记为平台生成摘要，不能当作用户原话。
+5. 文档与记忆分别处理：用户批准来源文档后，系统尝试投递 Knowledge；查看记忆、创建 Memory Pack 或在导出中心选择已入库文档是后续动作。
+6. 本地复制/下载 Pack，或创建外部授权让客户端通过网关读取。已经交付的内容无法从接收方撤回。
+
+原文件可用、输入片段可还原、关键位置匹配成功是不同状态。解析器升级不会自动改写旧批次或旧候选。
+
+候选抽取 API 当前允许单条消息最多 1,000,000 个字符；超过该限制的消息需要先处理。大批次和长会话会产生大量模型调用，处理时间及成功率受模型、上下文窗口和服务配置影响。
+
+### 授权和外部使用
+
+1. 启动 Vault 管理 API、EverOS 和独立网关，用本地所有者凭据连接前端，在“授权与管理”中开启外部访问。新 Vault 的网关初始为暂停；暂停状态会保留。
+2. 创建授权，指定主体名称、明确的项目、操作、记忆类型、用途和有效期。项目按 ID 精确匹配；默认 24 小时，可选 1–720 小时。外部凭据只显示一次，后续只能轮换或重新创建。
+3. **动态范围**允许在有效期内读取符合范围、已确认、有效且 `allow` 的当前记忆；日后新增的符合条件记忆也可进入该范围。`ask` 和 `deny` 不包含在动态授权内。
+4. **固定 Pack**先在 Memory Pack 中选择并确认内容，创建短期审批草稿，再完成授权。授权允许一次内容交付；所选记忆或策略变化时，旧授权包会失效，需要重新审核。
+5. 外部客户端通过 Bearer 凭据调用 8766 HTTP 接口，或由本地 MCP 适配器转发。可按权限搜索、获取记忆、构建上下文，或读取获批的固定 Pack。证据默认不开放，摘要读取需单独授权；外部证据接口不会返回完整原对话。
+6. 可以撤销单条授权、轮换凭据、查看审计，或暂停全部外部访问。审计记录操作和结果等元数据，不保存记忆正文或凭据。一次性交付在服务端受理后可能已消耗，即使客户端随后断线，也不要自动重试。
+
+外部搜索当前使用关键词子串匹配，不是语义搜索。前端的连接测试针对 HTTP 网关；还需要在具体 AI 客户端中检查 MCP 进程启动、工具发现和实际调用。详细配置及限制见 [授权、API 与 MCP 说明](docs/memo-vault-authorization.md)。
 
 ## 5. API 数量与入口
 
-### 统计口径
+按当前源码中显式声明的 HTTP 方法和路由统计：同一方法与路径算一个操作，不计 FastAPI 自动生成的文档端点；核心 API 的 `/api/v1` 与 `/api/v2` 是同一业务路由的两个挂载，不重复计数。数量表示声明，不等于每个操作都已完成或通过测试。
 
-以下数字按 FastAPI 源码中显式声明的 HTTP 方法和路由计算：同一个方法与路径算一个操作；不计 FastAPI 自动提供的 `/docs`、`/openapi.json` 等文档端点，也不把同一路由因版本前缀不同而误算成不同业务功能。
-
-| 服务 | 不同接口操作 | 实际挂载说明 |
+| 服务 | 不同操作 | 说明 |
 |---|---:|---|
-| EverOS 核心 API | **20** | 18 个业务操作分别挂在 `/api/v1` 和 `/api/v2`，另有不带版本前缀的 `/health`、`/metrics`，共 38 个方法与路径组合。 |
-| MEMO Vault API | **25** | 全部挂在独立服务的 `/api/v1` 下；其中 3 个 ADP 操作是未实现占位。 |
-| 合计 | **45** | 这是两个 FastAPI 应用的源码路由声明数，不代表同一端口上的 45 个可用接口。 |
+| EverOS 核心 API（8000） | 22 | 20 个业务操作同时挂在 v1 和 v2；另有 `/health`、`/metrics`，实际为 42 个方法与路径组合。 |
+| Vault 管理 API（8765） | 60 | 含 2 个所有者会话操作；3 个 ADP 操作为未实现占位。 |
+| 外部网关（8766） | 8 | 7 个授权业务操作和 1 个 `/health`，独立于管理 API。 |
+| 合计 | 90 | 三个服务的声明数合计；不把核心 v1/v2 视为两套功能。 |
 
-### EverOS 核心 API：20 个操作
+核心 API：记忆 4、Vault 候选 3、Knowledge 11、OME 1、级联控制 1、健康和指标 2。Knowledge 的新增操作包含原文件和 ZIP 导出。
 
-除 `/health` 和 `/metrics` 外，核心业务 API 同时接受 `/api/v1` 和 `/api/v2` 前缀；`/api/v2` 是当前规范名称，`/api/v1` 是兼容入口。
-
-| 范围 | 数量 | 用途 |
+| Vault 管理 API 范围 | 数量 | 用途 |
 |---|---:|---|
-| `/health`、`/metrics` | 2 | 服务健康与运行指标。 |
-| `/memory/*` | 4 | 添加记忆、结束批次写入、搜索和读取记忆。 |
-| `/memo-vault/candidates/*` | 3 | 从对话抽取候选、发布人工批准的候选、修改已发布记忆生命周期。 |
-| `/ome/trigger` | 1 | 手动触发离线记忆整理流程。 |
-| `/knowledge/*` | 9 | 上传、替换、删除、查询知识文档与主题、知识搜索和分类列表。 |
-| `/cascade/quiesce` | 1 | 控制后台级联任务停止接收新工作。 |
+| 所有者会话 `/auth/session` | 2 | 查询会话、使用本地凭据连接。 |
+| `/system/health`、`/projects` | 3 | 健康状态及项目空间。 |
+| `/imports/*` | 6 | 预览、归档、抽取、状态和内容清单。 |
+| `/import-jobs/*` | 9 | Claude 获取任务、恢复、补交和预览。 |
+| 导入内容审核 | 9 | 查看和审核平台摘要、文档及附件，投递或核对 Knowledge。 |
+| `/candidates/*`、`/memories/*` | 12 | 候选新增、审核与来源；正式记忆查看、修正和生命周期管理。 |
+| `/packs/*`、`/adp/*` | 5 | Memory Pack 预览/导出；ADP 的 3 个接口尚未实现。 |
+| `/knowledge-export/*` | 4 | Knowledge 文档列表、详情、原件及 ZIP。 |
+| `/grants/*`、`/gateway/*` | 10 | 授权、固定 Pack 草稿、轮换、撤销、审计和网关状态/开关。 |
 
-### MEMO Vault API：25 个操作
-
-以下路径都以 `/api/v1` 开头，但运行在 MEMO Vault 服务（默认 8765 端口），不是 EverOS 核心 API（默认 8000 端口）。
-
-| 范围 | 数量 | 用途 |
-|---|---:|---|
-| `/system/health` | 1 | Vault 和 EverOS 健康状态。 |
-| `/projects` | 2 | 查询和创建项目空间。 |
-| `/imports/*` | 5 | 预览、提交归档、取消预览、发起抽取、查询导入状态和 UMIF 校验摘要。 |
-| `/candidates`、`/candidates/*` | 6 | 人工新增、候选列表、GET/POST 两种来源读取（POST 可传当前草稿正文定位）、确认和拒绝。 |
-| `/memories/*` | 6 | 记忆概览、查询、详情、修正、撤销和删除。 |
-| `/packs/preview`、`/packs/export` | 2 | Memory Pack 预览与正式导出。 |
-| `/adp/*` | 3 | 轨迹列表、校验、导出；当前为未实现占位。 |
+外部网关业务接口是 `/api/v1/external/capabilities`、`memories/search`、`memories/get`、`evidence/get`、`context/build`、`packs/{pack_id}` 和 `packs/{pack_id}/deliver`。实际请求格式见 [授权说明](docs/memo-vault-authorization.md) 或已启动网关的 `/openapi.json`；管理接口不能通过外部网关调用。
 
 ## 6. 第一次阅读建议
 
-1. 先读 [中文项目介绍](../../../README.zh-CN.md) 和 [Quickstart](../../../QUICKSTART.md)，了解 EverOS 的使用方式。
-2. 再读 [架构说明](../../architecture.md) 与 [记忆工作方式](../../how-memory-works.md)，了解代码分层和数据流。
-3. 查核心 API 时读 [EverOS API 参考](../api.md)；Vault API 从 `src/everos/entrypoints/memo_vault/routes/` 及本文第 5 节开始。
-4. 阅读 [候选抽取说明](memo_vault_candidate_extraction.md)、[UMIF 规范](UMIF统一中间数据格式与EverOS接入规范.md)、[来源片段设计](2026-10-23-memcell-evidence-and-chinese-output-design.md) 和 [人工新增实施记录](../plans/2026-10-23-manual-memory-candidate.md)。设计中的偏好/事实类型映射已有后续调整，应以当前源码为准。
-5. [外部 API/MCP 交付提案](../plans/2026-10-23-memory-pack-api-mcp-proposal.md) 用于了解后续方向，不能作为已实现能力说明。
-6. 按功能追代码：前端从 `apps/memo-vault-ui/src/App.tsx` 开始，后端从对应 `entrypoints/.../routes/` 开始，再跟到服务和存储实现。相关测试位于 `tests/unit/test_entrypoints/test_memo_vault_*.py`、`test_deepseek_harness.py`、`test_umif_end_to_end.py`、`tests/unit/test_umif/` 及服务/API 路由测试目录；测试文件存在不代表本次已执行通过。
+1. 从 [中文项目介绍](README.zh-CN.md)、[Quickstart](QUICKSTART.md) 和 [架构说明](docs/architecture.md) 了解 EverOS。
+2. 查平台导入流程和边界：[ChatGPT 导入](docs/chatgpt-import.md)、[Claude 导入](docs/claude-import.md)、[UMIF 规范](docs/superpowers/specs/UMIF统一中间数据格式与EverOS接入规范.md)。DeepSeek 从 `deepseek_harness.py`、`deepseek_web.py` 和第 4 节入手。
+3. 查外部调用和本地安全边界：[授权、API 与 MCP](docs/memo-vault-authorization.md)；它包含请求示例、MCP 配置、限制和撤销行为。
+4. 查 Knowledge 配置：[Knowledge 文档](docs/knowledge.md)、[Ollama Knowledge 抽取](docs/ollama-knowledge.md)、[本地重排模型](docs/local-rerank.md)。
+5. 追代码时，从第 3 节中的前端组件或路由开始，再跟到服务、适配器和存储。`tests/` 有相关测试，但测试文件存在不代表本次文档更新已运行它们。
 
-## 7. 本机启动 MEMO Vault（Ollama，五终端方式）
+## 7. 本机启动 MEMO Vault（Ollama，五终端与可选网关）
 
-下面以 **Ubuntu / WSL2 + Bash** 为例，仓库路径为 `~/EverOS`。首次使用先完成环境准备，之后日常使用直接按后面的五终端流程启动。服务地址分别是 Ollama `11434`、EverOS `8000`、Vault `8765`，前端为 `5173`。
+下面以 **Ubuntu / WSL2 + Bash** 为例，仓库路径为 `~/EverOS`。首次使用先完成环境准备，之后日常使用直接按后面的五终端流程启动。服务地址分别是 Ollama `11434`、EverOS `8000`、Vault 管理 API `8765`、前端 `5173`；需要外部授权访问时再启动网关 `8766`。
 
 ### 首次使用：安装工具和依赖
 
@@ -274,7 +291,7 @@ cp examples/local-ollama/everos.toml .everos-ollama/everos.toml
 | 两者的 `api_key` | `ollama`，仅为非空占位值，无需购买或填写真实 Key。 |
 | `memorize.mode` | `chat` |
 
-完整参数见 [Ollama 配置样例](../../../examples/local-ollama/everos.toml)。模型名称必须与终端 2 下载的名称一致。
+完整参数见 [Ollama 配置样例](examples/local-ollama/everos.toml)。模型名称必须与终端 2 下载的名称一致。
 
 **2. 可选：把 Vault 环境变量保存为本机配置文件。** 首次创建：
 
@@ -357,13 +374,16 @@ export MEMO_VAULT_EVEROS_URL="http://127.0.0.1:8000"
 uvicorn everos.entrypoints.memo_vault.app:app --host 127.0.0.1 --port 8765
 ```
 
-检查 Vault 配置的 EverOS 地址：
+Vault 首次启动会在数据目录生成仅供本机所有者使用的 `owner-bootstrap.token`。管理 API 的健康接口也需要所有者认证；在另一个本地终端检查时可以执行：
 
 ```bash
-curl http://127.0.0.1:8765/api/v1/system/health
+cd ~/EverOS
+read -r VAULT_OWNER_TOKEN < .memo-vault/owner-bootstrap.token
+curl -H "Authorization: Bearer $VAULT_OWNER_TOKEN" http://127.0.0.1:8765/api/v1/system/health
+unset VAULT_OWNER_TOKEN
 ```
 
-响应中的 `data.everos_base_url` 应为 `http://127.0.0.1:8000`，`data.everos_status` 应为 `online`，`data.data_dir` 应指向本仓库的 `.memo-vault`。只看到 Vault 接口返回，并不表示 EverOS 已连通。
+响应中的 `data.everos_base_url` 应为 `http://127.0.0.1:8000`，`data.everos_status` 应为 `online`，`data.data_dir` 应指向本仓库的 `.memo-vault`。未认证时返回 401 是预期的访问控制，不代表服务没有启动。不要公开所有者凭据。
 
 ### 终端 5：启动前端
 
@@ -372,14 +392,51 @@ cd ~/EverOS/apps/memo-vault-ui
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173`，再重试抽取。Vite 会将 `/api/*` 转发给 `http://127.0.0.1:8765`；抽取请求由 Vault 再调用 EverOS，浏览器不直接调用 Ollama。
+打开 `http://127.0.0.1:5173`。本机 Vite 开发模式会尝试读取 Vault 数据目录的 `owner-bootstrap.token` 并自动填入，点击连接即可；如果自动填充失败，可手动读取并粘贴。若 Vault 使用其他数据目录，启动前端时应设置相同的 `MEMO_VAULT_DATA_DIR`。生产构建不提供自动填充。
+
+这是所有者凭据，与后续签发给外部应用的凭据不同。开发模式下能访问本机开发服务器的客户端可能取得该凭据，应仅供可信的本机测试使用。成功连接后浏览器使用约 8 小时的会话，管理 API 重启后需要重新连接。凭据不要提交到仓库或发给其他人。
+
+可在只有自己能看到的终端读取凭据：
+
+```bash
+cd ~/EverOS
+cat .memo-vault/owner-bootstrap.token
+```
+
+Vite 将 `/api/*` 转发给 `http://127.0.0.1:8765`；抽取请求由 Vault 再调用 EverOS，浏览器不直接调用 Ollama。改变前端端口时，检查 `MEMO_VAULT_UI_ORIGINS` 是否包含实际浏览器源。
+
+### 可选：终端 6，启动外部网关
+
+只有需要授权外部 HTTP 或 MCP 客户端时才需要运行。网关与 Vault 管理 API 必须使用同一个 `MEMO_VAULT_DATA_DIR`，并指向相同的 EverOS 服务：
+
+```bash
+cd ~/EverOS
+source .venv/bin/activate
+export MEMO_VAULT_DATA_DIR="$PWD/.memo-vault"
+export MEMO_VAULT_EVEROS_URL="http://127.0.0.1:8000"
+everos vault-gateway
+```
+
+网关默认监听 `127.0.0.1:8766`，新 Vault 默认暂停。先在前端“授权与管理”启用外部访问并创建授权，再用对应的外部凭据访问。`curl http://127.0.0.1:8766/health` 可检查网关进程；它只说明网关 HTTP 进程可达，不代表外部授权已启用或 EverOS 正常。不要将本地管理端口暴露到公网。
+
+如需 stdio MCP，在运行适配器的同一 Python 环境安装可选依赖：
+
+```bash
+cd ~/EverOS
+source .venv/bin/activate
+pip install -e '.[mcp]'
+```
+
+然后在“授权与管理”复制 MCP 配置模板，按 [授权说明](docs/memo-vault-authorization.md) 配置具体客户端；网关需要保持运行。该适配器使用外部授权凭据，不使用所有者凭据。
 
 ### 抽取失败时按链路检查
 
 - Ollama：`ollama list` 和 `/api/tags` 是否包含上述两个模型；EverOS 的 `.everos-ollama/everos.toml` 是否指向同一 Ollama 地址。
 - EverOS：`/health` 是否可达，终端 3 是否有模型连接、超时或结构化输出错误。
-- Vault：`/api/v1/system/health` 是否显示正确的 EverOS 地址和 `online`；终端 4 的导入/抽取错误是否与同一批次对应。
-- 前端：是否能访问 Vault，导入是否已归档。对失败批次使用“重试抽取”；抽取失败不会删除已归档原文件。查看新抽取结果后，再审核入库或导出 Pack。
+- Vault：使用上面的所有者认证检查 `/api/v1/system/health`；确认 EverOS 地址和 `online`，再查看终端 4 中对应批次的错误。
+- 前端：是否已使用所有者凭据连接 Vault，导入是否已归档。对失败批次使用“重试抽取”；抽取失败不会删除已归档原文件。
+- Claude：下载链接不可访问时可按原文件名补交 ZIP 并重试；若投递 Knowledge 报重排未配置，检查 EverOS 的 embedding 与 rerank 配置，参考 [本地重排模型](docs/local-rerank.md)。投递结果不确定时先核对，不要盲目重复提交。
+- 外部访问：检查 8766 进程、网关是否已启用、授权是否过期/撤销，以及项目和操作是否在授权范围内。MCP 还要检查客户端实际启动的 Python 环境和可选依赖。
 
 ## 8. 常用词语
 
@@ -390,5 +447,8 @@ npm run dev
 - **正式记忆**：已确认并写入 EverOS 的记忆内容，当前以 Markdown 记录作为权威来源。
 - **证据**：指向原始导入文件或对话消息的信息，用于回看记忆从何而来。
 - **项目空间**：MEMO Vault 中的范围边界；查询和导出时先选定项目，避免把不同项目的记忆混在一起。
-- **Memory Pack**：把用户选定且符合外发策略的正式记忆整理成便于复制或下载的内容包。
+- **Memory Pack**：把用户选定且符合外发策略的正式记忆整理成可复制、下载或授权交付的内容包。
+- **Knowledge**：EverOS 保存和检索项目文档的知识库；来源文件需经批准并成功投递，才会出现在 Knowledge 导出中心。
+- **所有者凭据**：本地管理界面的连接凭据，保存在 Vault 数据目录，不是给外部应用使用的令牌。
+- **外部授权与网关**：所有者为客户端设定的访问范围、期限与操作，以及负责逐次检查权限的独立服务。
 

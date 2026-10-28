@@ -5,19 +5,100 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+import zipfile
 from collections.abc import Mapping
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
+
+from everos.umif.package import read_package
 
 from ..adapter import EverOSAdapterError, EverOSHttpAdapter
 from ..config import get_settings
 from ..contracts import ApiEnvelope, ImportCommitRequest
 from ..evidence import select_evidence_excerpt, validate_source_segment
 from ..imports import ImportWorkflowError
+from ..source_inventory import source_members
 from ..storage import VaultStore
 
 router = APIRouter(prefix="/imports", tags=["memo-vault-imports"])
+
+
+@router.get("/{batch_id}/content-inventory")
+async def content_inventory(batch_id: str, request: Request, page: int = 1, page_size: int = 50):
+    """List archived UMIF tracks and source members without returning binary payloads."""
+    if page < 1 or page_size < 1 or page_size > 100:
+        raise HTTPException(status_code=422, detail="Invalid page")
+    store = request.app.state.vault_store
+    with store.connect() as c:
+        batch = c.execute("SELECT * FROM import_batches WHERE id=?", (batch_id,)).fetchone()
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Import batch not found")
+        mapped = {row["source_record_id"]: dict(row) for row in c.execute(
+            "SELECT source_record_id,target_type,target_id,status FROM umif_record_map WHERE batch_id=?", (batch_id,))}
+        reviews = {row["source_record_id"]: dict(row) for row in c.execute(
+            "SELECT source_record_id,decision,decided_at FROM import_content_reviews WHERE batch_id=?", (batch_id,))}
+        evidence = [dict(row) for row in c.execute(
+            "SELECT original_name,relative_path,sha256,media_type FROM evidence_files WHERE batch_id=?", (batch_id,))]
+        tool_count = c.execute("SELECT count(*) FROM normalized_tool_events WHERE batch_id=?", (batch_id,)).fetchone()[0]
+    root = store.data_dir.resolve()
+    relpath = batch["umif_package_relpath"]
+    if not relpath:
+        raise HTTPException(status_code=404, detail="UMIF package unavailable")
+    directory = (root / relpath).resolve()
+    if not directory.is_relative_to(root):
+        raise HTTPException(status_code=422, detail="Invalid package path")
+    try:
+        package = await run_in_threadpool(read_package, directory)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="UMIF package unreadable") from exc
+    records = [*package.principals, *package.sessions, *package.events,
+               *(record for group in package.optional_records.values() for record in group)]
+    tracks = {"conversation": 0, "agent": 0, "knowledge": 0, "assertion": 0, "other": 0}
+    items = []
+    for record in records:
+        kind = record.record_type
+        track = ("agent" if kind in {"event.tool_call", "event.tool_result"}
+                 else "conversation" if kind in {"session", "event.message"}
+                 else "knowledge" if kind in {"asset", "document"}
+                 else "assertion" if kind == "memory.assertion" else "other")
+        tracks[track] += 1
+        state = mapped.get(record.record_id, {})
+        item = {"record_id": record.record_id, "record_type": kind, "track": track,
+                "status": state.get("status", "archived"), "target_id": state.get("target_id"),
+                "review_decision": reviews.get(record.record_id, {}).get("decision"),
+                "reviewed_at": reviews.get(record.record_id, {}).get("decided_at"),
+                "content_sha256": record.provenance.get("content_sha256"),
+                "source_file": record.provenance.get("archive_name"),
+                "source_member": record.provenance.get("member_path")}
+        if kind in {"asset", "document"}:
+            item["name"] = record.payload.get("filename") or record.payload.get("title")
+            item["bytes"] = record.payload.get("size_bytes")
+        items.append(item)
+    source_files = []
+    for file in evidence:
+        source_files.append({"name": file["original_name"], "sha256": file["sha256"],
+                             "media_type": file["media_type"], "status": "archived"})
+        source = (root / file["relative_path"]).resolve()
+        if source.is_relative_to(root) and source.is_file() and zipfile.is_zipfile(source):
+            with zipfile.ZipFile(source) as archive:
+                for member in archive.infolist()[:1000]:
+                    if not member.is_dir():
+                        source_files.append({"name": member.filename, "bytes": member.file_size,
+                                             "status": "retained_in_source", "container": file["original_name"]})
+    source_info = (await run_in_threadpool(source_members, store, batch_id, package)
+                   if batch["source_type"] == "claude" else
+                   {"files": source_files, "total": len(source_files), "truncated": False})
+    return ApiEnvelope(request_id=uuid.uuid4().hex,
+                       data={"batch_id": batch_id, "package_id": batch["umif_package_id"],
+                             "tracks": tracks, "agent_events_stored": tool_count,
+                             "total": len(items), "page": page, "page_size": page_size,
+                             "items": items[(page-1)*page_size:page*page_size],
+                             "source_files": source_info["files"],
+                             "source_file_total": source_info["total"],
+                             "source_files_truncated": source_info["truncated"],
+                             "report": package.import_report})
 
 
 def _raise_api_error(error: ImportWorkflowError) -> None:
@@ -95,10 +176,14 @@ def _persist_candidates(
             unique_source_ids = list(dict.fromkeys(source_ids))
             placeholders = ",".join("?" for _ in unique_source_ids)
             source_rows = connection.execute(
-                f"""SELECT id, conversation_id, content FROM normalized_messages
-                    WHERE batch_id = ? AND id IN ({placeholders})""",
+                f"""SELECT id, conversation_id, content, timestamp_ms FROM normalized_messages
+                    WHERE batch_id = ? AND memory_input = 1 AND is_duplicate = 0
+                      AND id IN ({placeholders})""",
                 (batch_id, *unique_source_ids),
             ).fetchall()
+            if any(row['timestamp_ms'] is None for row in source_rows):
+                metadata = {**(metadata or {}), 'source_time_quality': 'inferred_processing_time',
+                            'source_timestamps_missing': True}
             if len(source_rows) != len(unique_source_ids):
                 raise HTTPException(
                     status_code=502,

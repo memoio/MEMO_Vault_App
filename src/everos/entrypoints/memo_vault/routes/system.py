@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from importlib.util import find_spec
 
 from fastapi import APIRouter, Request
 
+from ..adapter import EverOSHttpAdapter
 from ..config import get_settings
 from ..contracts import ApiEnvelope, HealthData
-from ..adapter import EverOSHttpAdapter
 
 router = APIRouter(prefix="/system", tags=["memo-vault-system"])
 
@@ -41,6 +42,11 @@ async def health(request: Request) -> ApiEnvelope[HealthData]:
                 "review": "ready",
                 "library": "ready",
                 "memory_pack": "ready",
+                "grant_management": "ready",
+                "external_pack_api": "ready",
+                "vault_gateway": "ready",
+                "vault_mcp_stdio": "ready" if find_spec("mcp") else "not_started",
+                "vault_mcp_remote": "not_started",
                 "adp_export": "not_started",
             },
         ),

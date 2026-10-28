@@ -162,7 +162,7 @@ async def list_candidates(
     with store.connect() as connection:
         rows = connection.execute(
             f"""SELECT c.id, c.batch_id, c.kind, c.memory_type, c.content, c.status, c.revision,
-                       c.evidence_kind, c.external_use, c.created_at,
+                       c.evidence_kind, c.external_use, c.created_at, c.metadata_json,
                        c.origin, c.target_project_id, c.validity_days, c.valid_until,
                        b.original_filename AS filename, b.project_id, b.raw_relpath,
                        b.file_sha256,
@@ -193,6 +193,7 @@ async def list_candidates(
                 "content": row["content"],
                 "status": row["status"],
                 "revision": row["revision"],
+                "metadata": json.loads(row["metadata_json"] or "{}"),
                 "evidence_kind": row["evidence_kind"],
                 "external_use": row["external_use"],
                 "origin": row["origin"],

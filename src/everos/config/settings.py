@@ -392,7 +392,7 @@ class EmbeddingSettings(BaseModel):
 
 
 class RerankSettings(BaseModel):
-    """Rerank client configuration.
+    """Rerank provider configuration (HTTP clients or local CrossEncoder).
 
     Unlike LLM / embedding (single OpenAI-compatible shape), rerank API
     schemas differ between providers — DeepInfra uses ``POST {base_url}/
@@ -409,9 +409,11 @@ class RerankSettings(BaseModel):
         EVEROS_RERANK__MAX_RETRIES
         EVEROS_RERANK__BATCH_SIZE
         EVEROS_RERANK__MAX_CONCURRENT
+        EVEROS_RERANK__DEVICE
+        EVEROS_RERANK__MAX_LENGTH
     """
 
-    provider: Literal["deepinfra", "vllm", "dashscope"] = "deepinfra"
+    provider: Literal["deepinfra", "vllm", "dashscope", "local"] = "deepinfra"
     model: str | None = None
     api_key: SecretStr | None = None
     base_url: str | None = None
@@ -419,6 +421,10 @@ class RerankSettings(BaseModel):
     max_retries: int = Field(default=3, ge=0)
     batch_size: int = Field(default=10, ge=1)
     max_concurrent: int = Field(default=50, ge=1)
+
+    # Local CrossEncoder inference; ignored by HTTP providers.
+    device: str = "cpu"
+    max_length: int = Field(default=512, ge=1, le=512)
 
 
 class BoundaryDetectionSettings(BaseModel):
@@ -663,10 +669,19 @@ class KnowledgeSearchSettings(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class KnowledgeExtractionSettings(BaseModel):
+    """Runtime-budgeted extraction for Ollama, preserving other providers."""
+
+    backend: Literal["auto", "ollama", "everalgo"] = "auto"
+    ollama_base_url: str | None = None
+    total_timeout_seconds: float = Field(default=600.0, gt=0)
+
+
 class KnowledgeSettings(BaseModel):
     """``[knowledge]`` — knowledge module configuration."""
 
     max_upload_bytes: int = 52_428_800  # 50 MiB
+    extraction: KnowledgeExtractionSettings = KnowledgeExtractionSettings()
     search: KnowledgeSearchSettings = KnowledgeSearchSettings()
 
 

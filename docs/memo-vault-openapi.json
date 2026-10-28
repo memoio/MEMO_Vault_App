@@ -1,0 +1,3301 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MEMO Vault Local API",
+    "description": "Local-first MEMO Vault import and archival API.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/system/health": {
+      "get": {
+        "tags": [
+          "memo-vault-system"
+        ],
+        "summary": "Health",
+        "operationId": "health_api_v1_system_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_HealthData_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "memo-vault-projects"
+        ],
+        "summary": "List Projects",
+        "operationId": "list_projects_api_v1_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "memo-vault-projects"
+        ],
+        "summary": "Create Project",
+        "operationId": "create_project_api_v1_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/preview": {
+      "post": {
+        "tags": [
+          "memo-vault-imports"
+        ],
+        "summary": "Preview Import",
+        "operationId": "preview_import_api_v1_imports_preview_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_import_api_v1_imports_preview_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/commit": {
+      "post": {
+        "tags": [
+          "memo-vault-imports"
+        ],
+        "summary": "Commit Import",
+        "operationId": "commit_import_api_v1_imports_commit_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/previews/{preview_id}": {
+      "delete": {
+        "tags": [
+          "memo-vault-imports"
+        ],
+        "summary": "Cancel Preview",
+        "operationId": "cancel_preview_api_v1_imports_previews__preview_id__delete",
+        "parameters": [
+          {
+            "name": "preview_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Preview Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__bool__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/status": {
+      "get": {
+        "tags": [
+          "memo-vault-imports"
+        ],
+        "summary": "Import Status",
+        "description": "Return safe retry diagnostics and the durable UMIF package reference.",
+        "operationId": "import_status_api_v1_imports__batch_id__status_get",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/extract": {
+      "post": {
+        "tags": [
+          "memo-vault-imports"
+        ],
+        "summary": "Extract Import",
+        "operationId": "extract_import_api_v1_imports__batch_id__extract_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Create Manual Candidate",
+        "description": "Add a human-authored candidate to the normal review queue.",
+        "operationId": "create_manual_candidate_api_v1_candidates_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "List Candidates",
+        "operationId": "list_candidates_api_v1_candidates_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(all|pending|confirmed|rejected)$",
+              "default": "all",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(preference|fact|decision|todo|episode|profile)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "origin",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(import|agent|manual)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Origin"
+            }
+          },
+          {
+            "name": "evidence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(valid|invalid|not_required)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Evidence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates/{candidate_id}/source/{message_id}": {
+      "get": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Get Candidate Source",
+        "description": "Read the archived conversation containing a linked evidence message.",
+        "operationId": "get_candidate_source_api_v1_candidates__candidate_id__source__message_id__get",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Read Candidate Source",
+        "description": "Read evidence using the current candidate draft for key-position search.",
+        "operationId": "read_candidate_source_api_v1_candidates__candidate_id__source__message_id__post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateSourceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates/{candidate_id}/confirm": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Confirm Candidate",
+        "operationId": "confirm_candidate_api_v1_candidates__candidate_id__confirm_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates/{candidate_id}/reject": {
+      "post": {
+        "tags": [
+          "memo-vault-candidates"
+        ],
+        "summary": "Reject Candidate",
+        "operationId": "reject_candidate_api_v1_candidates__candidate_id__reject_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__object__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memories/summary": {
+      "get": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Memory Library Summary",
+        "description": "Count canonical visible and still-syncing confirmed memories per project.",
+        "operationId": "memory_library_summary_api_v1_memories_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MemoryLibrarySummaryData_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memories": {
+      "get": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Search Memories",
+        "description": "List confirmed canonical memories from one existing project space.",
+        "operationId": "search_memories_api_v1_memories_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 500,
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "valid",
+                "expired",
+                "all"
+              ],
+              "type": "string",
+              "default": "valid",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MemoryLibraryListData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memories/{vault_memory_id}": {
+      "get": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Get Memory",
+        "description": "Read full canonical content only after a confirmed registry match.",
+        "operationId": "get_memory_api_v1_memories__vault_memory_id__get",
+        "parameters": [
+          {
+            "name": "vault_memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vault Memory Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_LibraryMemoryDetail_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Correct Memory",
+        "operationId": "correct_memory_api_v1_memories__vault_memory_id__patch",
+        "parameters": [
+          {
+            "name": "vault_memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vault Memory Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryCorrectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_LibraryMemoryDetail_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Delete Memory",
+        "operationId": "delete_memory_api_v1_memories__vault_memory_id__delete",
+        "parameters": [
+          {
+            "name": "vault_memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vault Memory Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_LibraryMemoryDetail_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memories/{vault_memory_id}/withdraw": {
+      "post": {
+        "tags": [
+          "memo-vault-memories"
+        ],
+        "summary": "Withdraw Memory",
+        "operationId": "withdraw_memory_api_v1_memories__vault_memory_id__withdraw_post",
+        "parameters": [
+          {
+            "name": "vault_memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vault Memory Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_LibraryMemoryDetail_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/packs/preview": {
+      "post": {
+        "tags": [
+          "memo-vault-exports"
+        ],
+        "summary": "Preview Pack",
+        "operationId": "preview_pack_api_v1_packs_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_PackPreviewData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/packs/export": {
+      "post": {
+        "tags": [
+          "memo-vault-exports"
+        ],
+        "summary": "Export Pack",
+        "operationId": "export_pack_api_v1_packs_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_PackExportData_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/adp/traces": {
+      "get": {
+        "tags": [
+          "memo-vault-exports"
+        ],
+        "summary": "List Adp Traces",
+        "operationId": "list_adp_traces_api_v1_adp_traces_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/adp/validate": {
+      "post": {
+        "tags": [
+          "memo-vault-exports"
+        ],
+        "summary": "Validate Adp",
+        "operationId": "validate_adp_api_v1_adp_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdpValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/adp/export": {
+      "post": {
+        "tags": [
+          "memo-vault-exports"
+        ],
+        "summary": "Export Adp",
+        "operationId": "export_adp_api_v1_adp_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdpValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs": {
+      "get": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "List Jobs",
+        "operationId": "list_jobs_api_v1_import_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_dict_str__Any___"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Create Job",
+        "operationId": "create_job_api_v1_import_jobs_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_job_api_v1_import_jobs_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_v1_import_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Retry Job",
+        "operationId": "retry_job_api_v1_import_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Cancel Job",
+        "operationId": "cancel_job_api_v1_import_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/{job_id}/parts": {
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Supply Part",
+        "operationId": "supply_part_api_v1_import_jobs__job_id__parts_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_supply_part_api_v1_import_jobs__job_id__parts_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/{job_id}/preview": {
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Preview Job",
+        "operationId": "preview_job_api_v1_import_jobs__job_id__preview_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewOptions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/claude-content": {
+      "get": {
+        "tags": [
+          "memo-vault-claude-content"
+        ],
+        "summary": "Get Content",
+        "operationId": "get_content_api_v1_imports__batch_id__claude_content_get",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/assertions/{record_id}/review": {
+      "post": {
+        "tags": [
+          "memo-vault-claude-content"
+        ],
+        "summary": "Review Assertion",
+        "operationId": "review_assertion_api_v1_imports__batch_id__assertions__record_id__review_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AssertionReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/documents/{record_id}/deliver": {
+      "post": {
+        "tags": [
+          "memo-vault-claude-content"
+        ],
+        "summary": "Deliver Document",
+        "description": "Submit once; reconcile unknown outcomes before another submission.",
+        "operationId": "deliver_document_api_v1_imports__batch_id__documents__record_id__deliver_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentDelivery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{batch_id}/documents/{record_id}/reconcile": {
+      "post": {
+        "tags": [
+          "memo-vault-claude-content"
+        ],
+        "summary": "Reconcile Document",
+        "description": "Find a previous upload by its content-addressed source filename and scope.",
+        "operationId": "reconcile_document_api_v1_imports__batch_id__documents__record_id__reconcile_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Record Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import-jobs/local": {
+      "post": {
+        "tags": [
+          "memo-vault-import-jobs"
+        ],
+        "summary": "Create Local Job",
+        "description": "Stream a complete locally downloaded Claude export into one job.",
+        "operationId": "create_local_job_api_v1_import_jobs_local_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_local_job_api_v1_import_jobs_local_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdpValidateRequest": {
+        "properties": {
+          "trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Trace Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trace_ids"
+        ],
+        "title": "AdpValidateRequest"
+      },
+      "ApiEnvelope_HealthData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/HealthData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[HealthData]"
+      },
+      "ApiEnvelope_LibraryMemoryDetail_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LibraryMemoryDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[LibraryMemoryDetail]"
+      },
+      "ApiEnvelope_MemoryLibraryListData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MemoryLibraryListData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[MemoryLibraryListData]"
+      },
+      "ApiEnvelope_MemoryLibrarySummaryData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MemoryLibrarySummaryData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[MemoryLibrarySummaryData]"
+      },
+      "ApiEnvelope_PackExportData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PackExportData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[PackExportData]"
+      },
+      "ApiEnvelope_PackPreviewData_": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PackPreviewData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[PackPreviewData]"
+      },
+      "ApiEnvelope_dict_str__Any__": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[dict[str, Any]]"
+      },
+      "ApiEnvelope_dict_str__bool__": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[dict[str, bool]]"
+      },
+      "ApiEnvelope_dict_str__object__": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[dict[str, object]]"
+      },
+      "ApiEnvelope_list_dict_str__Any___": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "data": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[dict[str, Any]]]"
+      },
+      "AssertionReview": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "title": "AssertionReview"
+      },
+      "Body_create_job_api_v1_import_jobs_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": "personal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_create_job_api_v1_import_jobs_post"
+      },
+      "Body_preview_import_api_v1_imports_preview_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type",
+            "default": "generic"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_import_api_v1_imports_preview_post"
+      },
+      "Body_supply_part_api_v1_import_jobs__job_id__parts_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_supply_part_api_v1_import_jobs__job_id__parts_post"
+      },
+      "CandidateSourceRequest": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "title": "CandidateSourceRequest"
+      },
+      "ConfirmCandidateRequest": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Revision"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "preference",
+              "fact",
+              "decision",
+              "todo",
+              "episode",
+              "profile"
+            ],
+            "title": "Kind"
+          },
+          "namespace": {
+            "type": "string",
+            "maxLength": 96,
+            "minLength": 1,
+            "title": "Namespace"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use",
+            "default": "ask"
+          },
+          "validity_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  30,
+                  90
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validity Days"
+          },
+          "evidence_kind": {
+            "type": "string",
+            "enum": [
+              "human_verified",
+              "human_authored"
+            ],
+            "title": "Evidence Kind"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision",
+          "kind",
+          "namespace",
+          "evidence_kind"
+        ],
+        "title": "ConfirmCandidateRequest"
+      },
+      "DocumentDelivery": {
+        "properties": {
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "DocumentDelivery"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthData": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status",
+            "default": "ok"
+          },
+          "everos_base_url": {
+            "type": "string",
+            "title": "Everos Base Url"
+          },
+          "everos_status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ],
+            "title": "Everos Status",
+            "default": "offline"
+          },
+          "everos_checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Everos Checked At"
+          },
+          "data_dir": {
+            "type": "string",
+            "title": "Data Dir"
+          },
+          "app_id": {
+            "type": "string",
+            "title": "App Id"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "max_import_bytes": {
+            "type": "integer",
+            "title": "Max Import Bytes"
+          },
+          "max_archive_unpacked_bytes": {
+            "type": "integer",
+            "title": "Max Archive Unpacked Bytes"
+          },
+          "max_archive_files": {
+            "type": "integer",
+            "title": "Max Archive Files"
+          },
+          "max_archive_compression_ratio": {
+            "type": "integer",
+            "title": "Max Archive Compression Ratio"
+          },
+          "features": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Features"
+          }
+        },
+        "type": "object",
+        "required": [
+          "everos_base_url",
+          "data_dir",
+          "app_id",
+          "user_id",
+          "agent_id",
+          "max_import_bytes",
+          "max_archive_unpacked_bytes",
+          "max_archive_files",
+          "max_archive_compression_ratio",
+          "features"
+        ],
+        "title": "HealthData"
+      },
+      "ImportCommitRequest": {
+        "properties": {
+          "preview_id": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 32,
+            "title": "Preview Id"
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preview_id",
+          "project_id"
+        ],
+        "title": "ImportCommitRequest"
+      },
+      "LibraryEvidenceItem": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "timestamp_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Ms"
+          },
+          "quote": {
+            "type": "string",
+            "title": "Quote"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "excerpt_matched": {
+            "type": "boolean",
+            "title": "Excerpt Matched",
+            "default": false
+          },
+          "archive_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "missing",
+              "hash_mismatch",
+              "hash_unavailable"
+            ],
+            "title": "Archive Status",
+            "default": "missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "message_id",
+          "role",
+          "timestamp_ms",
+          "quote",
+          "available"
+        ],
+        "title": "LibraryEvidenceItem"
+      },
+      "LibraryMemoryDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "everos_memory_id": {
+            "type": "string",
+            "title": "Everos Memory Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "namespace": {
+            "type": "string",
+            "title": "Namespace"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "atomic_fact",
+              "episode",
+              "profile"
+            ],
+            "title": "Memory Type"
+          },
+          "content_preview": {
+            "type": "string",
+            "title": "Content Preview"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "valid",
+              "expired"
+            ],
+            "title": "Status"
+          },
+          "lifecycle_status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn",
+              "deleted"
+            ],
+            "title": "Lifecycle Status",
+            "default": "active"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "evidence_kind": {
+            "type": "string",
+            "title": "Evidence Kind"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "default": ""
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryEvidenceItem"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "evidence_available": {
+            "type": "boolean",
+            "title": "Evidence Available"
+          },
+          "source_segment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Segment"
+          },
+          "lifecycle_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "everos_memory_id",
+          "project_id",
+          "namespace",
+          "kind",
+          "memory_type",
+          "content_preview",
+          "timestamp",
+          "external_use",
+          "status",
+          "revision",
+          "evidence_kind",
+          "valid_until",
+          "metadata",
+          "evidence",
+          "evidence_available"
+        ],
+        "title": "LibraryMemoryDetail"
+      },
+      "LibraryMemoryItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "everos_memory_id": {
+            "type": "string",
+            "title": "Everos Memory Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "namespace": {
+            "type": "string",
+            "title": "Namespace"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "memory_type": {
+            "type": "string",
+            "enum": [
+              "atomic_fact",
+              "episode",
+              "profile"
+            ],
+            "title": "Memory Type"
+          },
+          "content_preview": {
+            "type": "string",
+            "title": "Content Preview"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "valid",
+              "expired"
+            ],
+            "title": "Status"
+          },
+          "lifecycle_status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn",
+              "deleted"
+            ],
+            "title": "Lifecycle Status",
+            "default": "active"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "evidence_kind": {
+            "type": "string",
+            "title": "Evidence Kind"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "everos_memory_id",
+          "project_id",
+          "namespace",
+          "kind",
+          "memory_type",
+          "content_preview",
+          "timestamp",
+          "external_use",
+          "status",
+          "revision",
+          "evidence_kind",
+          "valid_until"
+        ],
+        "title": "LibraryMemoryItem"
+      },
+      "ManualCandidateRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "episode",
+              "preference"
+            ],
+            "title": "Kind"
+          },
+          "namespace": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Namespace"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use",
+            "default": "ask"
+          },
+          "validity_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  30,
+                  90
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validity Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "namespace",
+          "content"
+        ],
+        "title": "ManualCandidateRequest"
+      },
+      "MemoryActionRequest": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "title": "MemoryActionRequest"
+      },
+      "MemoryCorrectionRequest": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Revision"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision",
+          "content",
+          "external_use"
+        ],
+        "title": "MemoryCorrectionRequest"
+      },
+      "MemoryLibraryListData": {
+        "properties": {
+          "memories": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryMemoryItem"
+            },
+            "type": "array",
+            "title": "Memories"
+          },
+          "visible_total": {
+            "type": "integer",
+            "title": "Visible Total"
+          },
+          "missing_index_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Index Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "memories",
+          "visible_total",
+          "missing_index_ids"
+        ],
+        "title": "MemoryLibraryListData"
+      },
+      "MemoryLibraryProjectSummary": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "visible_valid_count": {
+            "type": "integer",
+            "title": "Visible Valid Count"
+          },
+          "syncing_count": {
+            "type": "integer",
+            "title": "Syncing Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "name",
+          "visible_valid_count",
+          "syncing_count"
+        ],
+        "title": "MemoryLibraryProjectSummary"
+      },
+      "MemoryLibrarySummaryData": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryLibraryProjectSummary"
+            },
+            "type": "array",
+            "title": "Projects"
+          }
+        },
+        "type": "object",
+        "required": [
+          "projects"
+        ],
+        "title": "MemoryLibrarySummaryData"
+      },
+      "PackExportData": {
+        "properties": {
+          "rendered_content": {
+            "type": "string",
+            "title": "Rendered Content"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          },
+          "preview_sha256": {
+            "type": "string",
+            "title": "Preview Sha256"
+          },
+          "content_sha256": {
+            "type": "string",
+            "title": "Content Sha256"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "vault-memory/1"
+            ],
+            "title": "Format"
+          },
+          "included_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Included Ids"
+          },
+          "included_revisions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Included Revisions"
+          },
+          "included_count": {
+            "type": "integer",
+            "title": "Included Count"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rendered_content",
+          "generated_at",
+          "preview_sha256",
+          "content_sha256",
+          "format",
+          "included_ids",
+          "included_revisions",
+          "included_count",
+          "estimated_tokens"
+        ],
+        "title": "PackExportData"
+      },
+      "PackExportRequest": {
+        "properties": {
+          "namespaces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Namespaces"
+          },
+          "kinds": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "fact",
+                "episode",
+                "profile"
+              ]
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Kinds"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "vault-memory/1"
+            ],
+            "title": "Format",
+            "default": "markdown"
+          },
+          "token_budget": {
+            "type": "integer",
+            "maximum": 32000.0,
+            "minimum": 100.0,
+            "title": "Token Budget",
+            "default": 4000
+          },
+          "evidence_mode": {
+            "type": "string",
+            "enum": [
+              "none",
+              "id",
+              "snippet",
+              "full"
+            ],
+            "title": "Evidence Mode",
+            "default": "id"
+          },
+          "memory_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 0,
+            "title": "Memory Ids"
+          },
+          "preview_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Preview Sha256"
+          },
+          "preview_generated_at": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Preview Generated At"
+          },
+          "confirmed_ask_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Confirmed Ask Ids"
+          },
+          "confirm_evidence": {
+            "type": "boolean",
+            "title": "Confirm Evidence",
+            "default": false
+          },
+          "confirm_unrecoverable_transfer": {
+            "type": "boolean",
+            "title": "Confirm Unrecoverable Transfer",
+            "default": false
+          },
+          "delivery_action": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "download"
+            ],
+            "title": "Delivery Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "namespaces",
+          "memory_ids",
+          "preview_sha256",
+          "preview_generated_at",
+          "delivery_action"
+        ],
+        "title": "PackExportRequest"
+      },
+      "PackPreviewData": {
+        "properties": {
+          "rendered_content": {
+            "type": "string",
+            "title": "Rendered Content"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          },
+          "preview_sha256": {
+            "type": "string",
+            "title": "Preview Sha256"
+          },
+          "content_sha256": {
+            "type": "string",
+            "title": "Content Sha256"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackPreviewItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "selected_ask_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Ask Ids"
+          },
+          "exclusion_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Exclusion Counts"
+          },
+          "included_count": {
+            "type": "integer",
+            "title": "Included Count"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "token_budget": {
+            "type": "integer",
+            "title": "Token Budget"
+          },
+          "estimate_is_approximate": {
+            "type": "boolean",
+            "title": "Estimate Is Approximate",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "rendered_content",
+          "generated_at",
+          "preview_sha256",
+          "content_sha256",
+          "items",
+          "selected_ask_ids",
+          "exclusion_counts",
+          "included_count",
+          "estimated_tokens",
+          "token_budget"
+        ],
+        "title": "PackPreviewData"
+      },
+      "PackPreviewItem": {
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "title": "Memory Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "episode",
+              "profile"
+            ],
+            "title": "Kind"
+          },
+          "namespace": {
+            "type": "string",
+            "title": "Namespace"
+          },
+          "external_use": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "title": "External Use"
+          },
+          "lifecycle_status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn",
+              "deleted"
+            ],
+            "title": "Lifecycle Status"
+          },
+          "validity_status": {
+            "type": "string",
+            "enum": [
+              "valid",
+              "expired"
+            ],
+            "title": "Validity Status"
+          },
+          "display_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Content"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible"
+          },
+          "selected": {
+            "type": "boolean",
+            "title": "Selected"
+          },
+          "included": {
+            "type": "boolean",
+            "title": "Included"
+          },
+          "exclusion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclusion Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "memory_id",
+          "revision",
+          "kind",
+          "namespace",
+          "external_use",
+          "lifecycle_status",
+          "validity_status",
+          "display_content",
+          "eligible",
+          "selected",
+          "included",
+          "exclusion_reason"
+        ],
+        "title": "PackPreviewItem"
+      },
+      "PackPreviewRequest": {
+        "properties": {
+          "namespaces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Namespaces"
+          },
+          "kinds": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "fact",
+                "episode",
+                "profile"
+              ]
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Kinds"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "vault-memory/1"
+            ],
+            "title": "Format",
+            "default": "markdown"
+          },
+          "token_budget": {
+            "type": "integer",
+            "maximum": 32000.0,
+            "minimum": 100.0,
+            "title": "Token Budget",
+            "default": 4000
+          },
+          "evidence_mode": {
+            "type": "string",
+            "enum": [
+              "none",
+              "id",
+              "snippet",
+              "full"
+            ],
+            "title": "Evidence Mode",
+            "default": "id"
+          },
+          "memory_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "namespaces"
+        ],
+        "title": "PackPreviewRequest"
+      },
+      "PreviewOptions": {
+        "properties": {
+          "confirm_project_merge": {
+            "type": "boolean",
+            "title": "Confirm Project Merge",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "PreviewOptions"
+      },
+      "ProjectCreateRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "parent_project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Project Id",
+            "default": "personal"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ProjectCreateRequest"
+      },
+      "RejectCandidateRequest": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Revision"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "title": "RejectCandidateRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "Body_create_local_job_api_v1_import_jobs_local_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": "personal"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_create_local_job_api_v1_import_jobs_local_post"
+      }
+    }
+  }
+}

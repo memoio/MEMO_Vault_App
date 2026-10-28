@@ -19,7 +19,9 @@ class UmifRecord(BaseModel):
     occurred_at: str | None = None
     timestamp_ms: int | None = None
     sequence: int
-    state: Literal["active", "deleted", "redacted", "superseded", "tombstone"] = "active"
+    state: Literal["active", "deleted", "redacted", "superseded", "tombstone"] = (
+        "active"
+    )
     provenance: dict[str, Any]
     routing_hints: dict[str, Any] = Field(default_factory=dict)
     privacy: dict[str, Any] = Field(default_factory=dict)
@@ -50,6 +52,18 @@ class ToolResult(UmifRecord):
 Event = Message | ToolCall | ToolResult
 
 
+class Asset(UmifRecord):
+    record_type: Literal["asset"] = "asset"
+
+
+class Document(UmifRecord):
+    record_type: Literal["document"] = "document"
+
+
+class MemoryAssertion(UmifRecord):
+    record_type: Literal["memory.assertion"] = "memory.assertion"
+
+
 class FileEntry(BaseModel):
     path: str
     sha256: str
@@ -75,3 +89,4 @@ class UmifPackage(BaseModel):
     events: tuple[Event, ...]
     optional_records: dict[str, tuple[UmifRecord, ...]] = Field(default_factory=dict)
     import_report: dict[str, Any] = Field(default_factory=dict)
+    blobs: dict[str, bytes] = Field(default_factory=dict, exclude=True)

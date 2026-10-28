@@ -29,6 +29,7 @@ from everos.infra.persistence.markdown import (
     AtomicFactReader,
     AtomicFactWriter,
     EpisodeReader,
+    EpisodeWriter,
     ProfileReader,
     ProfileWriter,
     UserProfileFrontmatter,

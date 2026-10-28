@@ -6,6 +6,7 @@ implementation to build:
     - ``"deepinfra"``  → :class:`DeepInfraRerankProvider`
     - ``"vllm"``       → :class:`VllmRerankProvider`
     - ``"dashscope"``  → :class:`DashScopeRerankProvider`
+    - ``"local"``      → :class:`LocalRerankProvider`
 
 Adding a new provider = one match arm here + one new file under
 :mod:`everos.component.rerank`.
@@ -18,6 +19,7 @@ from everos.config import RerankSettings
 
 from .dashscope_provider import DashScopeRerankProvider
 from .deepinfra_provider import DeepInfraRerankProvider
+from .local_provider import LocalRerankProvider
 from .protocol import RerankProvider
 from .vllm_provider import VllmRerankProvider
 
@@ -33,13 +35,22 @@ def build_rerank_provider(settings: RerankSettings) -> RerankProvider:
         A :class:`RerankProvider` ready to call ``rerank``.
 
     Raises:
-        ValueError: If ``model`` or ``base_url`` is unset, or if
+        ValueError: If ``model`` (or ``base_url`` for HTTP) is unset, or if
             ``provider`` does not match a known implementation.
             ``api_key`` is required for ``deepinfra``; optional (empty
             string) for ``vllm`` self-hosted endpoints.
     """
     if not settings.model:
         raise ValueError(missing_config_error("Rerank model", "rerank"))
+    if settings.provider == "local":
+        return LocalRerankProvider(
+            model=settings.model,
+            device=settings.device,
+            max_length=settings.max_length,
+            batch_size=settings.batch_size,
+            max_concurrent=settings.max_concurrent,
+            timeout=settings.timeout_seconds,
+        )
     if not settings.base_url:
         raise ValueError(missing_config_error("Rerank base_url", "rerank"))
     api_key = settings.api_key.get_secret_value() if settings.api_key else ""

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
+from openai import LengthFinishReasonError
 
 from everalgo._tokenize import count_tokens
 from everalgo.boundary import detect_boundaries
@@ -146,9 +147,11 @@ def _json_for_everalgo(value: str) -> str:
 class CandidateExtractionFormatError(RuntimeError):
     """Raised after a candidate extractor repeatedly returns invalid JSON."""
 
-    def __init__(self, message: str, *, stage: ExtractionStage = "atomic_fact") -> None:
+    def __init__(self, message: str, *, stage: ExtractionStage = "atomic_fact",
+                 reason: str | None = None) -> None:
         super().__init__(message)
         self.stage = stage
+        self.reason = reason
 
 
 async def extract_chat_candidates(
@@ -393,6 +396,23 @@ async def _retry_structured_output[T](
     for attempt in range(1, _STRUCTURED_MAX_ATTEMPTS + 1):
         try:
             return await operation()
+        except LLMError as exc:
+            if not isinstance(exc.__cause__, LengthFinishReasonError):
+                raise
+            logger.warning(
+                "memo_vault_candidate_output_truncated",
+                stage=stage,
+                unit_index=unit_index,
+                attempt=attempt,
+                max_attempts=_STRUCTURED_MAX_ATTEMPTS,
+            )
+            if attempt == _STRUCTURED_MAX_ATTEMPTS:
+                raise CandidateExtractionFormatError(
+                    f"{stage} extraction output was repeatedly truncated.",
+                    stage=stage,
+                    reason="output_truncated",
+                ) from None
+            await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
         except (json.JSONDecodeError, ValueError, ValidationError) as exc:
             logger.warning(
                 "memo_vault_candidate_invalid_json",

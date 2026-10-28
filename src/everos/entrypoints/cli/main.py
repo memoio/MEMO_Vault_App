@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import typer
 
-from .commands import cascade, config_cmd, demo, init_cmd, server
+from .commands import cascade, config_cmd, demo, init_cmd, server, vault
 
 app = typer.Typer(
     name="everos",
@@ -30,6 +30,7 @@ app.add_typer(config_cmd.app, name="config")
 # idiomatic ``alembic init`` / ``django-admin startproject`` shape.
 init_cmd.register(app)
 demo.register(app)
+vault.register(app)
 
 
 if __name__ == "__main__":

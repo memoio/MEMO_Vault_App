@@ -1,235 +1,396 @@
-# Memory Pack API and MCP Export Proposal
+# Memory Pack API, Authorization and MCP Development Proposal
 
-> Status: proposed design and phased development plan, pending product review. No product code is implemented by this document.
-> Implementation handoff: after scope approval, use superpowers:executing-plans or explicitly approved subagent-driven-development for task execution.
+> Updated: 2026-10-25, Asia/Shanghai. Implementation is available in the working tree. Feature acceptance passes; repository-wide baseline failures are recorded in `docs/testing/2026-10-25-vault-api-mcp-validation.md`.
+> Product reference: `docs/superpowers/屏幕截图 2026-10-24 172719.png`, supplied by the product manager and inspected directly.
+> Execution: implemented inline on `feat/vault-authorization-mcp`, with an independent review and regression fixes. Existing unrelated workspace changes were preserved.
 
-**Goal:** Let an external application or MCP client receive a user-approved Memory Pack without copying text or downloading a file manually.
+**Goal:** Add an Authorization & MCP page where an owner authorizes an Agent/application, obtains API/MCP setup instructions, verifies access, and revokes it. Consumers can retrieve permitted current memories or receive an explicitly approved Memory Pack without manual file handling.
 
-**Architecture:** Keep Vault as the authority for export policy. A shared delivery use case serves an authenticated external HTTP API; a separate MCP adapter calls that API. Reuse canonical EverOS reads and existing Pack serialization instead of exposing the core memory API as an export gateway.
+**Architecture:** One Vault gateway enforces authorization and external-use policy. External applications call its HTTP API directly; MCP clients call a local adapter that uses the same HTTP API. The frontend configures and observes these backend services; it does not host the API or MCP server.
 
-**Tech stack:** Existing Python 3.12+, FastAPI, SQLite, Pydantic, React/TypeScript; an optional official MCP SDK dependency for the adapter, pinned to a tested client/protocol matrix during implementation.
+**Tech stack:** Existing Python 3.12+, FastAPI, SQLite, Pydantic and React/TypeScript. Add a tested optional official MCP SDK dependency and a separately launched stdio entrypoint.
 
-**Spec:** Sections 3-8 of this proposal are the draft specification. This is a reviewable proposal, not an approved execution specification.
+**Spec:** Sections 2-10 form the proposed design. Sections 11-13 define implementation tasks and verification. Defaults below are engineering proposals, not prior product-manager decisions.
 
-## 1. Verified baseline
+## 1. Verified baseline and change from the previous proposal
 
-Reviewed against the current working tree on 2026-10-23, including uncommitted Vault work. Older plans are not the source of truth.
+The 2026-10-23 analysis read the project guide, Pack routes/service/contracts, source projection, adapter, store, UI and existing MCP documentation. On 2026-10-24 the prototype, current navigation, memory routes, evidence helpers, settings and health capabilities were also inspected.
 
-- `docs/project-guide.zh-CN.md`: EverOS core and MEMO Vault are separate applications, normally on ports 8000 and 8765.
-- `src/everos/entrypoints/memo_vault/routes/exports.py`: working `POST /api/v1/packs/preview` and `POST /api/v1/packs/export` already exist. ADP endpoints remain placeholders.
-- `memory_pack.py`: selection, lifecycle filtering, approximate budgeting, Markdown/JSON rendering, content hashes, preview revalidation, and final confirmation checks already exist.
-- `contracts.py`: Pack kinds are currently exactly `fact`, `episode`, `profile`; formats are `markdown` and `vault-memory/1`. Delivery actions are exactly `copy` and `download`.
-- `library.py`: confirmed Vault rows are joined to scoped canonical EverOS content. Missing, inactive, and denied records do not fall back to candidate bodies. Local policy is revalidated after upstream awaits.
-- `adapter.py`: canonical reads are paginated and validate identity/scope, duplicate IDs, and changing totals. Pack generation still loads full relevant project/type collections; token budget does not bound upstream work.
-- `storage.py`: `exports` contains metadata-only export receipts; there is no external-client grant/token lifecycle or approved-Pack registry.
-- `apps/memo-vault-ui/src/App.tsx`: browser preview -> final confirmation -> backend export -> clipboard/download.
-- `docs/mcp.md`: the existing separate `everos-mcp` integration calls core `/api/v2/memory/*`, not Vault export policy. This is not an existing Vault MCP export implementation.
-- Vault app/config currently provide a local identity, not authenticated owner sessions or multi-user isolation.
+- Existing Vault endpoints: `POST /api/v1/packs/preview` and `/packs/export`; formats: Markdown and `vault-memory/1`; actions: copy/download.
+- Pack filtering already covers confirmed canonical content, lifecycle, external-use policy, selection, approximate token budget, preview hash and revalidation.
+- Current Pack kinds are `fact`, `episode`, `profile`. Older source rows can carry other kinds; the historical six-kind plan must not silently widen this feature.
+- `MemoVaultLibraryService.list_memories` currently implements case-insensitive substring filtering, not semantic/vector ranking. Its owner-facing results can contain ask/deny records; it is not an external policy gateway.
+- Canonical reads are scoped and paginated, but loading a project can still scan its full relevant collections. A small output token budget does not bound upstream work.
+- The current `exports` table records export metadata. There is no working grant/token system, owner session, gateway pause state, or encrypted Vault lock.
+- The UI currently has imports/review/library/pack/ADP navigation; Authorization & MCP must be added.
+- `docs/mcp.md` describes the separate core EverOS MCP integration. It does not implement Vault egress policy.
 
-Verification performed:
+Historical verification performed on 2026-10-23:
 
 ```bash
 .venv/bin/python -m pytest tests/unit/test_entrypoints/test_memo_vault_pack_sources.py tests/unit/test_entrypoints/test_memo_vault_memory_pack.py tests/unit/test_entrypoints/test_api/test_routes/test_memo_vault_exports.py -q
 ```
 
-Result: **28 passed in 3.17s**. These are current Pack regression tests, not tests of the proposed external gateway.
+Result then: **28 passed in 3.17s**. These tests were not rerun for this documentation-only revision and do not verify the proposed gateway.
 
-## 2. Options and recommendation
+**Scope revision:** the earlier proposal prioritized a fixed, single-delivery Pack. The supplied prototype explicitly includes an Agent, project scope, operations, expiry, purpose, reusable client configuration and a search test. Therefore the recommended first release now includes **live, read-only scoped access**, with **approved-Pack delivery as a separate mode**. The old single-use rule applies only to approved-Pack delivery, never to every search call.
 
-| Option | What changes | Advantages | Limitations |
+## 2. Product structure and options
+
+Two real options were considered:
+
+1. Keep only fixed-Pack delivery and use the prototype as an authorization table. Smaller, but its search/get/build tools and persistent Agent access would be misleading.
+2. Implement the prototype as a read-only gateway with two explicit modes. This matches the intended page and reuses Memory Pack for context construction and precise one-time transfers.
+
+**Recommendation: option 2.** Keep write operations and remote OAuth hosting out of the first release.
+
+| Mode | Meaning to the owner | Content changes | Usage and ask policy |
 | --- | --- | --- | --- |
-| Script the existing preview/export API | Add examples and a client wrapper | Smallest change; useful for trusted owner scripts | Caller can assert confirmation booleans; preview discloses ask bodies; no delegated access boundary |
-| Approved Pack with scoped external delivery | Persist approval manifest and grant; add authenticated delivery API and MCP adapter | Extends the current product directly; reproducible, reviewable content; bounded authorization | Requires approval persistence, credential management, and control-plane protection |
-| Live Agent memory gateway | Add scoped search/list/get/build operations over current memory | Better for ongoing Agent context retrieval | Broader product: per-result policy, approval requests, query limits, indexing and pagination |
+| `live_scope` | This Agent may read current allow-policy memories in these selected projects until expiry | Newly confirmed allow memories in the selected scope become visible; each call rechecks current state | Repeated reads subject to rate limits; ask/deny are absent |
+| `approved_pack` | This Agent may receive exactly this reviewed Pack once | Selected member/version changes invalidate approval; unrelated changes do not | Single admitted content delivery; ask requires explicit per-item approval |
 
-**Recommendation:** second option first, third as a follow-up. The first remains a trusted-owner integration technique, not the security model for external Agents.
+The creation dialog explains the live mode's inclusion of future allow memories. It is not a frozen snapshot. All stored project scopes are exact project IDs, not name prefixes or implicit descendant wildcards.
 
-**Working assumption:** initial export means receiving the exact user-selected Pack. Live retrieval is an extension, not silently included. If live retrieval is the priority, stage 4 becomes the primary deliverable and the scope/estimate must change.
+## 3. Authorization & MCP page, mapped to the prototype
 
-## 3. Scope and invariants
+Add `authorization` to the existing navigation with the requested localized title. Implement a focused page component rather than growing `App.tsx` with all new state. Product copy follows the existing localization approach; new Python/TypeScript identifiers and technical documentation remain English-first.
 
-- Only confirmed, active, unexpired memories with canonical bodies can leave Vault.
-- Retain the current three Pack kinds. Source projection still recognizes older kinds; do not silently revive six-kind export from the historical plan.
-- External format defaults to `vault-memory/1`; Markdown remains supported. No new memory schema is necessary for transport alone.
-- External evidence mode defaults to `none`. MVP supports only `none` and `id`; the owner must explicitly choose IDs because source references also reveal metadata. Existing local excerpt export remains unchanged.
-- `deny` never leaves. `ask` requires a trusted owner approval bound to this exact delivery; client flags cannot grant permission.
-- A client credential authorizes a named client to consume a bounded approved Pack. It cannot create grants, approve its own request, edit memory, or read import archives.
-- The credential is a bearer capability, not proof of a client's cryptographic identity. Display names alone do not prevent credential copying.
-- Preserve the copy/download API contract. External clients use a separate route surface and response model.
-- Delivery is pull-based. No third-party push/webhook, full Vault backup, ADP export, multi-account service, or all-project bulk dump in the MVP.
-- Use English for new code/docs and existing datetime helpers for persisted UTC timestamps.
+### 3.1 Header and grant table
 
-## 4. Proposed user and data flow
+Preserve the prototype's header, New authorization action and upper grant table. Columns: subject, namespaces/projects, permitted operations, expiration, purpose, status, actions. Add a compact mode badge so live access and fixed-Pack delivery are distinguishable. Show last use and request ID in expandable details rather than adding many columns.
 
-1. Owner selects projects, kinds, budget, memories, and permitted evidence mode using the existing Pack UI.
-2. Owner chooses API/MCP delivery and reviews the exact payload plus recipient label, expiry, and read limit.
-3. Trusted owner endpoint reloads canonical sources, validates the preview and per-item ask approval, and saves an immutable approval manifest.
-4. Server issues a random opaque token once. Store only its verifier; never place it in query strings, ordinary logs, or a committed client config.
-5. External client requests content using the token. Server resolves its scope; client cannot supply owner identity, expand projects, change format/evidence mode, or add memory IDs.
-6. Server revalidates the grant, selected memory states and hashes; atomically reserves the allowed delivery and writes its receipt before returning bytes.
-7. Revocation prevents future delivery admissions. Already returned bytes cannot be recalled.
+- Status: active, expires soon, expired, revoked; approved-Pack mode also has consumed/stale. A paused gateway is a global access state, not a mutation of every grant.
+- Expiration countdown is computed from UTC state and displayed in the user's timezone; do not copy the prototype's sample dates.
+- Revoke requires an explicit user action and immediately updates the row after backend success.
+- Recreate with same settings opens a prefilled form, requires review of a new expiry, and issues a fresh grant/token. It never reactivates an expired/revoked token.
+- Rotation, if offered, atomically revokes the old credential when issuing the replacement. A plain duplicate of an active authorization requires an explicit warning about simultaneous active grants.
+- Purpose is an owner-readable description and audit field, not proof that an external app will obey its declared purpose.
 
-Suggested MVP defaults: 24-hour grant expiry and one content delivery. Empty Packs cannot receive a grant. A future reusable grant may deliver allow-only content with an explicit owner-set read limit; it must not make ask approval reusable.
+### 3.2 New authorization dialog
 
-The owner action creates authorization, not an external delivery receipt. Do not count the approval itself as receipt by the consumer.
+Fields: subject label, mode, explicit project selection, memory kinds, operations, purpose, expiry, output budget, evidence permission and rate limits. Default: `live_scope`, 24-hour expiry, three current kinds, search/get/build operations, no evidence access. No default all-project access. Suggested first-release configurable lifetime range: 1 hour to 30 days.
 
-## 5. Approval, integrity, and concurrency
+Approved-Pack mode links to the existing Pack selection/preview flow, then returns to this page with an opaque server-side draft ID and summary. The draft and preview must be revalidated before authorization. Do not put memory bodies, raw tokens or full Pack selections in a URL.
 
-### Approval manifest
+The final review states who can access what, which operations, whether future allow records are included, expiry, and that already delivered content cannot be recalled. It separately confirms included ask records for a fixed Pack.
 
-Persist `approved_pack_id`, fixed generation time, serializer version, exact format/evidence mode, selected IDs/revisions, namespace/type scope, budget, per-memory canonical hashes, approved artifact hash, and expiry. Bind consent to the manifest hash and grant. Do not store additional memory bodies in the export registry.
+### 3.3 Lower-left integration panel
 
-On delivery, reconstruct from current canonical content using the frozen generation time and serializer version. Require every approved member and artifact hash to match. If a selected memory was edited, withdrawn, expired, deleted, denied, or disappeared, reject the entire Pack as `PACK_APPROVAL_STALE`; never silently omit it or add replacements. A change to an unrelated unselected memory must not invalidate an approved Pack.
+Keep the prototype's configuration card, but add **MCP configuration** and **API invocation** tabs so both requested entry methods are discoverable on the same page.
 
-The existing preview hash covers the broader source set. Keep it for local preview -> approval validation, but do not use it as the persistent approved-Pack identity: define a separate manifest hash over approved members and rendering configuration.
+- Select a grant, displaying subject plus scope/mode; subject alone is ambiguous if it has multiple grants.
+- MCP tab: client-compatible stdio configuration template, executable/prerequisite instructions and Copy template.
+- API tab: real base URL, operation list, request body example and Copy example. Use `Authorization: Bearer <TOKEN>` and placeholders for secrets.
+- Show a credential only once after creation. Subsequent visits show a safe prefix/suffix and templates with `<YOUR_TOKEN>`, not an apparently executable masked token.
+- The server stores only token verifiers; it cannot reconstruct a real token when a dropdown changes. To test after a reload, the owner supplies the credential again or rotates it.
+- A secret-inclusive copy action is available only during the creation reveal session and requires explicit selection. Persistent JSON config containing a credential is a local secret file and must be documented as such; prefer environment/credential references when supported by the host.
+- Gateway address is generated from actual configuration, not hardcoded to the prototype's `127.0.0.1:8765`.
 
-Pin `generated_at`; otherwise repeated rendering changes bytes. Do not call private renderer helpers from an MCP tool: expose a tested delivery renderer contract. If an old serializer version is no longer available after upgrade, require reapproval rather than producing different bytes under an old hash.
+### 3.4 Lower-right connection test
 
-### Admission boundary
+Retain subject, tool, namespace and Run test controls. Add tool-specific inputs: keyword for search/build, memory ID for get, memory/evidence IDs for evidence, fixed Pack ID for delivery. Never auto-run a content request when selecting a subject/tool.
 
-Perform slow upstream reads before the final local transaction. Then use a SQLite write transaction to recheck grant status/expiry/use count, local revisions/policy/expiry, and manifest identity; reserve use and write the receipt atomically. No upstream await belongs inside that transaction.
+The test submits an actual external Bearer credential to the same gateway used by applications. Subject is derived from that token; the display selector only filters forms/templates and cannot impersonate an Agent. Neither owner session nor an arbitrary grant ID substitutes for the external token.
 
-A revocation committed before this transaction blocks delivery; a request admitted before revocation may finish. This is the promised revocation boundary. Do not claim all in-flight bytes can be stopped. Core changes outside Vault lack a cross-service transaction; document that delivery validates the canonical version observed during its read, not a distributed linearizable snapshot.
+Display success/denial, elapsed time, request ID and a bounded result preview. Clear result and in-memory token when switching grants, navigating away, pausing or revoking. Do not put secret/content into localStorage, URLs or analytics.
 
-### Retry semantics
+For approved-Pack mode, label the action as an actual content delivery, warn that it consumes the approval, and require confirmation. A metadata/authorization check is a separate non-consuming test. A browser HTTP test verifies the gateway; it does not prove that an external host has installed the MCP adapter or completed an MCP connection. Provide a separate host-side MCP verification recipe.
 
-Default single-delivery tokens are consumed when server delivery is admitted, even if the network subsequently fails. Do not promise exactly-once receipt or automatic replay of ask content. Let the owner inspect the receipt and reauthorize if needed. Authorization creation can use an owner-scoped idempotency key to avoid duplicate grants on UI retries.
+### 3.5 Header states and deliberate prototype boundaries
 
-## 6. API surface and authorization boundary
+- Implement a persisted backend **Pause external access / Resume** switch. All gateway operations check it, including in-flight reads before final admission. Label it as gateway access, not encryption or Vault decryption.
+- Owner-only diagnostics show gateway/upstream reachability. External calls return a generic denial when globally paused or memory storage is unavailable, matching the prototype's fail-closed behavior.
+- Hide the prototype's encryption-lock, cloud invocation and demo-control badges until those features exist. Do not claim complete Vault encryption or cloud connectivity based on this feature.
+- `propose_memory` is visibly marked planned/disabled rather than included in an effective grant. Future proposals create pending candidates and never directly publish formal memories.
+- Preserve the wide-screen table plus two cards; stack cards and allow readable table scrolling on narrow screens. Loading, empty, denial, stale, expired and unavailable states must be explicit.
 
-Proposed paths; these are new contracts, not claims about existing endpoints.
+## 4. One policy model for API and MCP
 
-| Audience | Operation | Contract |
-| --- | --- | --- |
-| Owner console | `POST /api/v1/pack-authorizations` | Current preview inputs/hash plus recipient, expiry and final confirmations; returns approved Pack ID, grant ID and one-time-visible token |
-| Owner console | `GET /api/v1/pack-authorizations` | Metadata/status only; never returns token secrets or Pack bodies |
-| Owner console | `DELETE /api/v1/pack-authorizations/{grant_id}` | Revoke future delivery admissions; idempotent |
-| External client | `GET /api/v1/external/packs/{pack_id}` | Authorized metadata only; no selection rows, ask text, or wider project statistics |
-| External client | `POST /api/v1/external/packs/{pack_id}/deliver` | Authenticated bounded delivery; returns exact JSON or Markdown artifact bytes |
+A grant contains subject label, exact project IDs, allowed kinds, operations, mode, purpose, expiry, evidence ceiling, budget and rate limit; approved-Pack mode also binds a manifest. Each grant has its own credential. Never union grants implicitly because they share a subject name.
 
-`POST` delivery reflects token consumption and avoids prefetch/cache semantics. Use `Cache-Control: no-store`. Return request/receipt IDs and `X-Content-SHA256` in headers. The artifact hash is over the exact UTF-8 body produced by the pinned renderer, not a JSON transport envelope or an MCP wrapper. Client libraries may parse JSON after validating those bytes.
+Effective visibility is the intersection of request scope, grant scope, confirmed registry membership, active lifecycle, current validity, canonical-body availability, permitted kinds, and external-use policy. Reject an explicitly requested out-of-scope project/operation; do not silently broaden or infer project access through names or parent relationships.
 
-Invalid, expired, revoked, exhausted tokens and inaccessible Pack IDs use a generic authorization failure. Only a valid grant bound to the requested Pack may receive specific `PACK_APPROVAL_STALE`, upstream-unavailable, or budget/payload errors. No response reveals whether a foreign project or memory exists.
+- Live mode: include only `external_use=allow`. Do not expose ask/deny content, titles, snippets, counts or evidence through search, get, context, errors or test previews. No automatic ask approval/request workflow is implied.
+- Fixed mode: allow eligible records and individually owner-approved ask records bound to the manifest and one delivery. Deny remains absolute.
+- Check grants before project/source reads, and filter egress before shaping counts/snippets and rendering. Never expose raw owner-facing list/detail responses.
+- Token identifies the grant and its subject; request `subject`, `user_id` or `app_id` cannot impersonate an identity. Reject unknown fields on external DTOs.
+- Source-policy and grant changes during upstream awaits are checked again immediately before response admission.
+- Credential labels are not cryptographic identity; a copied Bearer credential carries its access rights.
 
-### Two trust planes
+Threat model: a trusted local owner/OS account delegates through a protected gateway. An arbitrary process running as the same OS user may already read local files or reach the unauthenticated core API. This feature does not sandbox such a process; stronger isolation requires protecting every core/storage access path or separate OS/service identities.
 
-Keep owner controls and external delivery on distinct ASGI applications/listeners, with an explicit route allowlist. Never expose the whole current Vault application via a reverse proxy intended for external delivery. Core EverOS remains private.
+## 5. External operation contracts
 
-Owner grant creation/revocation needs a locally provisioned owner credential/session, origin/host checks and CSRF protection for cookie-authenticated mutations; loopback and CORS alone are insufficient. External tokens must fail on owner and existing preview/library/import routes, including if supplied to the control listener. Owner-side changes must include a browser bootstrap/session mechanism; shipping a grant endpoint into the current unauthenticated app is not sufficient.
+All paths below are proposed new contracts. Do not expose current owner library/import routes externally.
 
-MVP threat model: trusted local OS account and trusted owner UI; protected API delegation to external consumers. A same-user local process can already access local files and the unauthenticated core API. Scoped Vault tokens do not sandbox arbitrary same-user Agents. Stronger isolation requires separate OS/service identities or protecting every core read surface and storage access, and is outside this MVP.
+| Capability | HTTP endpoint | MCP tool | First-release behavior |
+| --- | --- | --- | --- |
+| Find current permitted records | `POST /api/v1/external/memories/search` | `search_memory` | Live mode; bounded keyword search with authorized snippets |
+| Read one current record | `POST /api/v1/external/memories/get` | `get_memory` | Live mode; exact scoped Vault memory ID, version and content |
+| Read limited supporting evidence | `POST /api/v1/external/evidence/get` | `get_evidence` | Explicit opt-in permission; bounded verified excerpt only |
+| Construct usable context | `POST /api/v1/external/context/build` | `build_context` | Live mode; authorized current sources rendered as a budgeted Memory Pack |
+| Inspect a fixed approved Pack | `GET /api/v1/external/packs/{pack_id}` | `get_pack_info` | Fixed mode; metadata only, no consumption |
+| Receive a fixed approved Pack | `POST /api/v1/external/packs/{pack_id}/deliver` | `read_memory_pack` | Fixed mode; one admitted content delivery |
+| Suggest a candidate memory | Not exposed initially | `propose_memory` disabled/planned | Follow-up pending-candidate workflow, not direct publication |
 
-## 7. MCP integration
+External context/search cannot request evidence unless the grant has separate evidence permission. The requested evidence mode may only narrow the grant's ceiling. Initially context defaults to no evidence and permits IDs with opt-in; `get_evidence` separately returns a matched verified excerpt, capped at 360 Unicode characters using existing helpers. Never return whole source conversations, original archives or source-segment fallbacks. Missing/unmatched/hash-invalid evidence yields generic unavailable/denied externally, with owner-only diagnostics. Human-authored memories can have no evidence.
 
-MCP is an adapter over the external delivery API. It does not access SQLite, read Markdown directly, call core memory search, or accept `confirm_*` booleans as owner consent.
+### Search and context semantics
 
-Initial tools:
+- Suggested request fields: explicit `project_ids`, optional `kinds`, nonempty `query` up to 500 characters, `limit` 1-50 (default 10), opaque `cursor` for search; context adds `token_budget` 100-32000, `format` and permitted evidence mode. Intersect kinds/budget with grant ceilings; reject explicit excess rather than claim it was honored.
+- Initial search is case-insensitive keyword substring matching over canonical permitted text, with stable newest-first then ID ordering. Label it keyword search; semantic retrieval can be added later behind the same egress gate.
+- Search pagination counts/offsets consider only permitted visible results. Use a versioned, server-authenticated cursor bound to grant, exact query/scope and permitted-result revision digest. Revoke/policy updates or digest changes invalidate it with a generic restart-required response; it never discloses hidden counts.
+- Initial implementation can reuse bounded canonical scans. Proposed hard limits: 5,000 canonical rows scanned per call across projects, 1 MiB response, 30-second upstream deadline, 30 requests/minute and 2 in-flight calls per grant. Reject incomplete/oversized work before admission, never silently claim complete results. Wire scan limits into adapter pagination rather than checking only after all pages load. Bound any cursor state and expire it after 5 minutes.
+- `build_context` applies the same live visibility gate first, then reuses Pack whole-item budgeting/rendering. It may return fewer records for budget reasons, with only authorized exclusion information and `estimate_is_approximate=true`.
+- Live calls can return updated allow content on the next call; fixed mode must never silently substitute a changed version.
 
-- `get_pack_info(pack_id)`: returns only authorized Pack metadata/status.
-- `read_memory_pack(pack_id)`: performs delivery; returns parsed JSON through the SDK's negotiated structured result support, with a text fallback for tested older clients. Preserve JSON schema version and receipt metadata.
+JSON memory/context results retain `vault-memory/1` where applicable. A versioned transport envelope carries request ID, receipt ID and estimates outside the Pack schema. Define content hashes over the exact pinned rendered artifact bytes, not the surrounding HTTP/MCP envelope. The fixed delivery endpoint returns those exact JSON/Markdown bytes with `X-Content-SHA256` and receipt headers; no hash equivalence is claimed for a client's reserialized JSON.
 
-Each stdio process receives its Vault URL, token and fixed Pack ID through environment or a local protected credential reference. Do not include a grant creation tool. Tool annotations must accurately reflect consuming a one-time delivery; read-only wording does not imply retry safety. Label memory text as untrusted user data, not instructions; retain existing training-consent metadata without claiming downstream enforcement.
+Use `Cache-Control: no-store`. Invalid/revoked/expired credentials, inaccessible records, disallowed operations, globally paused gateway and unavailable memory backend produce stable `access denied` responses without internal addresses or content. Use 401 for unauthenticated, 403 for denied/unavailable, 429 for rate/concurrency limits; owner diagnostics and sanitized audit reasons preserve the actionable distinction. `PACK_APPROVAL_STALE` is visible only to a currently authorized fixed-Pack client; malformed inputs are 422 and changed search cursors return 409. MCP maps the same semantic errors to its tool error envelope.
 
-Start with stdio for local clients. Select the SDK/protocol version by testing actual target clients, rather than assuming the latest published protocol is universally supported. A separate Vault adapter avoids exposing the existing MCP server's write tools accidentally. Extending the separate EverOS-MCP repository is an alternative only if it gains an explicit Vault-only mode and independent URL/credential configuration.
+## 6. Owner API and control-plane protection
 
-Remote MCP is a subsequent milestone: Streamable HTTP, TLS, origin validation and the MCP HTTP authorization profile, including OAuth discovery and resource/audience binding. A static token on a custom HTTP endpoint is not sufficient to claim compatibility with OAuth-only MCP hosts.
+Owner-only routes, protected by a locally provisioned owner session/credential:
 
-References consulted on 2026-10-23:
+- `POST /api/v1/grants`: create a reviewed live or fixed grant and reveal token once.
+- `GET /api/v1/grants`: metadata, status and token fingerprint only.
+- `DELETE /api/v1/grants/{grant_id}`: idempotent revoke.
+- `POST /api/v1/grants/{grant_id}/rotate`: replace credential atomically; old credential immediately loses admission rights.
+- `GET /api/v1/gateway/status` and `POST /api/v1/gateway/pause` / `resume`: owner status/control.
+- `GET /api/v1/grants/{grant_id}/audit`: bounded sanitized request metadata, no memory bodies or secrets.
+
+These replace the previous draft's `/pack-authorizations` route names; no implementation or compatibility promise exists for those draft names.
+
+Keep owner and external route surfaces on separate ASGI applications/listeners with an explicit route allowlist. New external listener default proposal: `127.0.0.1:8766`, configurable; existing owner UI API remains 8765, core remains 8000. The page shows the configured gateway address. An MCP adapter can live on the same machine while the owner API stays private.
+
+Implement owner bootstrap/session, origin/host checks, and CSRF protection for cookie-authenticated mutations. External tokens never authenticate as owner or grant access to existing preview/library/import endpoints. No frontend-only permission gate. Local and remote reverse-proxy configurations must not expose core/control routes accidentally. CORS, if needed for the local connection-test UI, uses exact trusted UI origins and does not substitute for Bearer authentication. The browser sends the supplied token directly to the configured local gateway; an owner-side proxy must not allow arbitrary target URLs.
+
+## 7. Token, state, admission and audit
+
+### Credentials and lifecycle
+
+Generate high-entropy opaque tokens, e.g. `mv_<random>`, and store only secure verifiers plus a display fingerprint. The credential shown once is the only recoverable copy; dropdowns and list APIs cannot reveal it. Create/rotate responses use no-store and log redaction. No query-string secrets, default secret persistence, or tokens embedded in git-tracked examples.
+
+Live grant lifecycle: active -> expired/revoked. Fixed grant additionally transitions active -> consumed, or becomes stale if its approved members no longer match. Recreate creates a new record and consent; it never changes history.
+
+Persist gateway pause across process restart. An initially unconfigured external gateway starts paused; owner setup explicitly enables it. Pausing/revoking does not erase receipts or recover already delivered content.
+
+### Fixed-Pack approval integrity
+
+Store selected IDs/revisions/hashes, fixed timestamp, format/evidence mode, kind/project scope, budget, serializer version, manifest hash and artifact hash. Store no additional memory bodies. Reconstruct from current canonical content; any selected content/lifecycle/policy/evidence rendering change invalidates approval. Unselected-record changes do not.
+
+The existing preview hash covers a broader source set; use it to validate owner preview -> approval, and define a separate manifest identity for persistent authorization. Freeze generation time and renderer version; unsupported historical versions require reapproval.
+
+### Final admission transaction
+
+Load and render upstream content outside a SQLite write transaction. In a final short transaction, recheck credential/grant version, expiry, operation/scope, gateway state, local source revisions/policy/expiry, and rate/use reservation; write the sanitized audit/receipt before admitting response bytes. Upstream failure or rejected admission never produces a successful receipt.
+
+Fixed grants atomically reserve one content use; concurrent requests admit at most one response. Metadata checks do not consume it. Live grants admit repeated permitted calls and each receives an audit entry. Calls admitted before revocation/pause may finish; calls admitted after the state commit must fail. This is the promised boundary, not a guarantee to recall in-flight bytes. Cross-service core reads are not a distributed linearizable snapshot.
+
+A fixed approval is consumed on admission even if the response is subsequently lost. Show that distinction in UI; no silent replay or exactly-once client receipt promise. If audits cannot be persisted, fail closed before delivery. Creation can use an owner-scoped idempotency key to prevent duplicate grants after form retries without replaying an already revealed secret indefinitely.
+
+Audit fields: request/receipt ID, grant ID, subject reference, operation, transport, admitted/denied reason, scoped record IDs/revisions/hash, timestamp, duration and bounded counts. No query text by default, memory/evidence bodies, token or raw HTTP request. Audit purpose/subject labels are untrusted display strings. Use a bounded retention/pagination policy; proposed default retention 30 days, owner configurable.
+
+## 8. MCP adapter and installation
+
+MCP presents callable tools to an AI application. Its stdio process invokes the exact same external HTTP API with the configured credential; it never calls the core memory API or reads Vault files/database directly.
+
+- Start with stdio, not a browser-hosted MCP server. Include get/read fixed-Pack tools only for fixed mode and live tools only for live mode. Server-side authorization is authoritative even if a client sends an unadvertised tool.
+- `tools/list` uses grant capabilities without returning memory content; dynamic revocation is enforced on every call regardless of a client's cached tool list.
+- Token and gateway are process configuration, never model-supplied tool arguments. Do not add a create-grant or confirm-ask tool.
+- Preserve typed JSON outputs with the tested SDK, text fallback for explicitly tested hosts, and consistent tool errors. Mark outputs as user data; tool annotations do not imply retry safety for single-use delivery.
+- Protocol stdout remains clean; diagnostics go to stderr with secrets/body redacted.
+- On host-side validation, check process launch, tool discovery and an actual authorized call. The page's HTTP test is reported separately.
+
+Proposed installable command, subject to an implementation packaging check: `everos vault-mcp --gateway http://127.0.0.1:8766`, with `MEMO_VAULT_TOKEN` read from environment. Extend the existing Typer command tree without changing core MCP behavior. Config templates are generated only for an executable that is actually shipped and tested; the prototype's `memo-vault mcp` is not assumed to exist.
+
+A generic JSON template, shown as a template until a real local credential is supplied:
+
+```json
+{
+  "mcpServers": {
+    "memo-vault": {
+      "command": "everos",
+      "args": ["vault-mcp", "--gateway", "http://127.0.0.1:8766"],
+      "env": { "MEMO_VAULT_TOKEN": "<YOUR_TOKEN>" }
+    }
+  }
+}
+```
+
+MCP host formats vary; initially verify at least one supported JSON-configured host and document its tested version. Do not claim this template imports unchanged into every host. An optional MCP package must not break ordinary EverOS installations without the SDK.
+
+Remote MCP is deferred: Streamable HTTP, TLS and the MCP HTTP authorization profile, including OAuth discovery and resource/audience binding, require separate compatibility work. Official MCP guidance distinguishes stdio environment credentials from HTTP authorization. References checked on 2026-10-24:
 
 - [MCP transports](https://modelcontextprotocol.io/specification/latest/basic/transports)
 - [MCP authorization](https://modelcontextprotocol.io/specification/latest/basic/authorization)
-- [Existing EverOS-MCP repository](https://github.com/EverMind-AI/EverOS-MCP)
+- [Existing EverOS-MCP repository](https://github.com/EverMind-AI/EverOS-MCP), consulted in the initial analysis
 
-## 8. Persistence and component boundaries
+## 9. Component and persistence plan
 
-Add tables with idempotent migrations:
+Use shared application services with dependency-injected source, renderer, repository and clock ports; no service-layer imports of `everos.entrypoints.*`. Adapt the existing Vault loader/renderer/store from the composition root rather than relocating the entire Vault subsystem.
 
-- `approved_packs`: immutable manifest, artifact/manifest hashes, renderer version and expiry; metadata only.
-- `export_grants`: Pack binding, token verifier, recipient label, expiry/revocation/use count; secret returned once.
-- `delivery_receipts`: request/grant/Pack IDs, transport, selected revisions/hash, admission outcome and timestamp; no payload/token.
+| File/unit | Responsibility |
+| --- | --- |
+| `src/everos/service/memo_vault_grants.py` (new) | Grant creation/revoke/rotation/pause state use cases |
+| `src/everos/service/memo_vault_gateway.py` (new) | Shared visibility, permitted reads/context, admission and audit |
+| `src/everos/service/memo_vault_export_contracts.py` (new) | Neutral typed contracts and source/repository/renderer ports |
+| `src/everos/entrypoints/memo_vault/gateway_contracts.py` (new) | Owner and external HTTP DTOs and limits |
+| `.../memo_vault/auth.py`, `routes/grants.py`, `routes/gateway_control.py` (new) | Owner session and thin management adapters |
+| `.../memo_vault/external_app.py`, `routes/external_gateway.py` (new) | Allowlisted external app and thin operation adapters |
+| Existing `library.py`, `adapter.py`, `memory_pack.py` | Bounded sources, final-state checks and public renderer adapter |
+| Existing `storage.py`, `config.py`, `app.py`, `routes/system.py` | Migrations, ports/state settings, composition and honest capability state |
+| `src/everos/entrypoints/memo_vault_mcp/` (new) | stdio HTTP adapter and tool schemas |
+| Existing CLI command registration, `pyproject.toml`, lockfile | MCP command and optional dependency packaging |
+| `apps/memo-vault-ui/src/AuthorizationMcpPage.tsx` (new) | Page composition and isolated form/state |
+| New focused frontend grant/config/test components | Grant dialog/table, templates and credential-backed connection tests |
+| Existing `src/api.ts`, `App.tsx`, `styles.css` | Typed clients, navigation and layout integration |
 
-Retain historical `exports` rows. Either extend them for new delivery receipts or use the new table, but do not reinterpret historical copy/download records as verified client receipt. Failed authorization attempts must not create successful export rows; rate-limit and redact security events separately.
+Persistence with idempotent migrations: `export_grants` plus exact grant-scope data, `approved_packs` (manifest only), `gateway_state`, and `gateway_audit` (bounded metadata). A grant can reference a fixed manifest. Integrate fixed delivery receipts with existing `exports` or a dedicated receipt table without relabeling historical copy/download events as confirmed external receipt. Do not require new full-text memory storage or store plaintext tokens.
 
-Keep HTTP/MCP endpoints thin. Proposed application service: `src/everos/service/memo_vault_exports.py`, with explicit source-loader, renderer, clock and repository ports. It must not import `everos.entrypoints.*`. Existing Vault library/renderer/store implementations are injected by the composition root. Put shared neutral delivery types/ports in the service module or a focused `src/everos/service/memo_vault_export_contracts.py`; HTTP DTO conversion stays in entrypoints. This permits reuse without moving the whole Vault subsystem in this feature.
+## 10. Explanatory flows
 
-New HTTP DTOs: `src/everos/entrypoints/memo_vault/export_contracts.py`; owner routes: `routes/pack_authorizations.py`; external routes/app: `routes/external_packs.py` and `external_app.py`. Authentication adapters live in `entrypoints/memo_vault/auth.py`; persistence methods/migrations initially extend the existing `storage.py`. MCP entrypoint lives in `entrypoints/memo_vault_mcp/` and uses only the HTTP contract.
+### Owner setup, shared by API and MCP
 
-## 9. Phased implementation plan
+```mermaid
+flowchart TD
+  A[Open Authorization and MCP] --> B[Create authorization]
+  B --> C{Access mode}
+  C -->|Live scope| D[Choose projects, operations and expiry]
+  C -->|Fixed Pack| E[Review exact Pack and approve ask items]
+  D --> F[Review and confirm access]
+  E --> F
+  F --> G[Backend saves grant and shows token once]
+  G --> H{Integration tab}
+  H -->|API| I[Copy HTTP example and configure credential]
+  H -->|MCP| J[Copy template and configure local MCP adapter]
+  I --> K[Run credential-backed gateway test]
+  J --> K
+  J --> L[Also verify tools in actual MCP host]
+```
 
-### Task 1: Delivery domain and renderer contracts
+### Runtime, same checks through both entry methods
 
-- [ ] Define typed approval manifest, grant, receipt, and delivery errors, with explicit source/renderer/repository ports.
-- [ ] Add tests for reconstruction with a fixed timestamp, selected-member hashes, stale selected members, unrelated memory changes, unsupported renderer version, and current three-kind behavior.
-- [ ] Implement manifest generation and byte-identical re-rendering through a public renderer adapter; preserve local preview/export behavior.
-- [ ] Verify the new domain tests plus the existing 28 Pack tests before committing this unit.
+```mermaid
+flowchart TD
+  A[Application] -->|HTTP API and token| G[Vault gateway]
+  B[AI application] -->|MCP tool call| C[Local MCP adapter]
+  C -->|Same HTTP API and token| G
+  G --> H{Grant valid and gateway enabled?}
+  H -->|No| X[Access denied]
+  H -->|Yes| I[Load scoped canonical memories]
+  I --> J[Apply current policy and lifecycle rules]
+  J --> K{Grant mode}
+  K -->|Live| L[Allow records only; bounded search/get/context]
+  K -->|Fixed Pack| M[Exact approved members and matching versions]
+  L --> N[Final state check and audit admission]
+  M --> N
+  N -->|Changed or denied| X
+  N -->|Admitted| O[Return permitted data]
+```
 
-**Files:** new service modules above; existing `memory_pack.py`, `library.py`, and their tests. New test: `tests/unit/test_service/test_memo_vault_export_delivery.py`.
+### Revoke and pause
 
-### Task 2: Owner authentication and authorization persistence
+```mermaid
+flowchart LR
+  A[Owner revokes grant or pauses gateway] --> B[Persist state change]
+  B --> C[Next admission checks new state]
+  C --> D[API and MCP both deny access]
+  B --> E[Previously delivered content remains outside Vault]
+```
 
-- [ ] Define and test the local owner bootstrap/session contract before exposing grant mutations; external token must never authenticate as owner.
-- [ ] Add migration tests for old databases, repeated initialization, grant hashing, one-time secret display, expiry, revocation, and idempotent creation.
-- [ ] Implement approved Pack/grant storage and trusted owner creation/list/revocation endpoints. Validate the existing preview and final confirmations on creation; reject empty Packs.
-- [ ] Test forged ask confirmations from external clients, foreign IDs, CSRF/origin/host failures, and token redaction.
+## 11. Development tasks and acceptance
 
-**Files:** `auth.py`, `export_contracts.py`, `routes/pack_authorizations.py`, `storage.py`, `app.py`, `config.py`. Tests: `tests/unit/test_entrypoints/test_memo_vault_export_auth.py` and `test_memo_vault_pack_authorizations.py`.
+### Task 1: Policy contracts, bounded read adapters and fixed manifests
 
-### Task 3: External delivery API and atomic receipts
+- [x] Define grant modes, allowed operations, typed ports/results/errors and proposed default limits from sections 2-5.
+- [x] Write failing tests for live allow-only search/get/context, absence of hidden counts/snippets, current three kinds, exact project scopes, kind narrowing, evidence opt-in and unsupported operations.
+- [x] Implement policy projection using confirmed canonical sources; do not reuse owner-facing responses directly. Add adapter scan/deadline caps and authenticated scoped cursor handling.
+- [x] Test fixed-byte rendering with frozen timestamp/version, selected-member mutation, unrelated changes, stale evidence and oversized results.
+- [x] Run new service/source tests plus the existing three Pack test modules; preserve owner copy/download contracts.
 
-- [ ] Write API tests for exact bytes/hash/content type, valid metadata, generic unauthorized failures, and zero successful receipts on rejected delivery.
-- [ ] Implement the external app with only the two allowlisted routes and scoped bearer verification.
-- [ ] Implement the final admission transaction, use reservation and metadata-only receipt. Test two simultaneous reads of a single-use grant, revocation during upstream reads, grant expiry, memory expiry, and policy changes before admission.
-- [ ] Inject network/upstream failures: no stale/candidate fallback and no claim of client receipt; verify documented token consumption on response failure.
-- [ ] Bound request/response bytes, upstream load/concurrency/timeouts and rate limits independently of approximate token budget. Suggested initial response cap: 1 MiB, with whole-response rejection before admission if exceeded.
+**Tests:** `tests/unit/test_service/test_memo_vault_gateway.py`, `test_memo_vault_export_delivery.py`; extend existing source/adapter/renderer tests.
 
-**Files:** `routes/external_packs.py`, `external_app.py`, service/repository adapters, `config.py`. Test: `tests/unit/test_entrypoints/test_memo_vault_external_packs.py`.
+### Task 2: Owner authentication, grants, pause and audit persistence
 
-### Task 4: Owner UI and API client example
+- [x] Test owner bootstrap/session and reject external credentials on owner/library/import routes; cover CSRF, host/origin validation and no global all-project default.
+- [x] Test old-DB migration/reinitialization, secret verifier storage, secret reveal once, valid expiry range, separate grants per subject, recreate/rotate behavior and pause persistence.
+- [x] Implement protected owner routes and repository adapters, including metadata-only sanitized audit with bounded retention.
+- [x] Test idempotent revoke, atomic rotation, old-token rejection, service restart while paused, and failure to persist audit/state.
 
-- [ ] Add API/MCP delivery alongside copy/download using the owner authorization endpoint; do not make `delivery_action="api"` an authorization mechanism.
-- [ ] Show exact recipient, expiry, content/evidence scope and single-use semantics; require per-delivery ask confirmation and transfer acknowledgement.
-- [ ] Display the secret once, provide a protected configuration recipe, and show grant status/revoke controls. No tokens in URLs, browser analytics or persisted UI settings.
-- [ ] Add a minimal HTTP client example that consumes the token and parses `vault-memory/1`; validate bytes against the response hash.
-- [ ] Build the UI and exercise authorization -> API delivery -> receipt -> exhausted/revoked status with synthetic data.
+**Tests:** new `tests/unit/test_entrypoints/test_memo_vault_grants.py`, `test_memo_vault_gateway_auth.py` and store migration tests.
 
-**Files:** existing UI `src/api.ts`, `src/App.tsx`, `src/styles.css`; new focused UI components if needed; `examples/memo_vault_pack_client.py`.
+### Task 3: External HTTP gateway and concurrency
 
-### Task 5: stdio MCP adapter
+- [x] Write contract tests for each enabled operation, response schema/hash, exact egress filtering, generic access denied behavior and no cross-grant identity spoofing.
+- [x] Implement the separate external app and endpoint allowlist; owner session never substitutes for an external token.
+- [x] Test final-admission policy/grant expiry changes, revoke/pause during upstream awaits, changed cursors, storage outage and no fallback to candidate/archive text.
+- [x] Test one-use fixed delivery under concurrency, live repeated reads, per-grant rate/concurrency caps, 1 MiB responses, scan cap and 30-second deadline.
+- [x] Inject response loss and audit failure; verify honest consumed/admitted status and no false client-receipt claim.
 
-- [ ] Test the adapter against a fake external HTTP API: no owner/core calls, no token leakage, structured result and text fallback, stable unauthorized/stale/upstream errors.
-- [ ] Implement `get_pack_info` and `read_memory_pack` without duplicating Pack policy or schema transformation.
-- [ ] Add optional MCP dependency/entrypoint and packaging checks; send diagnostics to stderr and protocol output to stdout.
-- [ ] Run one actual target MCP host integration with synthetic allow/ask/deny records; verify one delivery consumes one approval and retries do not silently redeliver.
-- [ ] Document supported host/protocol versions and configuration separately from existing `docs/mcp.md` core integration.
+**Tests:** new `tests/unit/test_entrypoints/test_memo_vault_external_gateway.py`, concurrent service tests. Add a synthetic HTTP API client example.
 
-**Files:** `src/everos/entrypoints/memo_vault_mcp/`, `pyproject.toml`, lockfile, new `tests/unit/test_entrypoints/test_memo_vault_mcp.py`, new English Vault export guide.
+### Task 4: Authorization & MCP page
 
-### Task 6: End-to-end acceptance and capability reporting
+- [x] Add navigation and focused page/components matching the prototype's grant table and two lower cards, with API/MCP tabs.
+- [x] Implement grant form, live/fixed mode explanation, exact scope review, expiry/status/last-use display, revoke, recreate and rotation feedback.
+- [x] Connect the fixed-Pack selection round trip with server-side draft/revalidation; preserve existing copy/download.
+- [x] Implement one-time token reveal, accurate placeholders and configuration templates, no hidden secret recovery, and clear test inputs/results.
+- [x] Exercise create -> API test -> audit -> revoke -> access denied; verify grant changes clear credentials/results and actual fixed delivery is never triggered automatically.
+- [x] Test narrow screens, missing prerequisites, gateway outage/pause, expiry, stale Pack, empty/loading/error states and keyboard-accessible controls.
+- [x] Run UI build and focused UI tests; if no UI test runner exists, choose a minimal established runner during implementation and record manual acceptance separately.
 
-- [ ] Verify API/MCP yield the same approved artifact semantics, member set and content hash while keeping transport metadata separate.
-- [ ] Exercise canonical-store outage, missing index, stale approval, duplicate requests, expired/exhausted/revoked grants, mixed-project inputs and source evidence isolation.
-- [ ] Verify externally exposed OpenAPI contains no owner/library/import/core routes and that a reverse-proxy allowlist cannot accidentally publish them.
-- [ ] Advertise `external_pack_api` and `vault_mcp_stdio` independently; do not report remote MCP/OAuth, live query or ADP as ready.
-- [ ] Run focused new and existing tests, UI build, lint/import rules, datetime and language checks. Record any pre-existing failures separately.
+### Task 5: stdio MCP adapter and client verification
 
-## 10. Review focus and completion criteria
+- [x] Test tool discovery for live/fixed modes, permission enforcement on direct unadvertised calls, output/error mapping and credential isolation from tool arguments.
+- [x] Implement an adapter over the shared HTTP API; check no direct core/SQLite/filesystem access.
+- [x] Add and package the actual CLI command plus optional SDK dependency, then generate matching templates. Missing optional dependency produces a useful installation message.
+- [x] Verify clean protocol stdout, redacted stderr and a real supported host's launch -> tools/list -> allowed call -> revoke -> denied call cycle.
+- [x] Report HTTP test and actual MCP-host test independently; document tested host/protocol versions and local-only reachability.
 
-Five failures requiring explicit coverage:
+**Tests:** new `tests/unit/test_entrypoints/test_memo_vault_mcp.py`, CLI smoke/packaging tests.
 
-1. External preview or metadata reveals ask/deny/unapproved content: Tasks 2-3.
-2. A stolen/wrong-Pack/external token can mutate owner controls or expand scope: Tasks 2-3.
-3. Concurrent delivery/revocation lets a one-use approval admit two responses: Task 3.
-4. A selected record changes between approval and delivery or after an upstream await: Tasks 1 and 3.
-5. JSON envelopes, timestamps, serializer upgrades or MCP formatting change the claimed artifact hash: Tasks 1 and 5-6.
+### Task 6: Cross-surface integration and documentation
 
-MVP is complete when a user authorizes an exact Pack once, an HTTP client and a tested MCP host can consume it without manual file handling, all policy and lifecycle restrictions apply, and the owner can revoke future access with an honest metadata-only audit trail.
+- [x] Run API and MCP with the same synthetic grant/query; confirm equivalent authorized results, scope and receipts.
+- [x] Verify pause/revoke/storage-unavailable rejection on every operation, including evidence, context, metadata and fixed delivery.
+- [x] Verify external OpenAPI and deployment routing contain no owner/core/import routes. Test allowed browser origin and rejection of untrusted origins/hosts.
+- [x] Advertise live gateway, fixed delivery and stdio MCP capabilities independently. Leave candidate write, encryption lock, remote OAuth/MCP and ADP unready.
+- [x] Run focused new/existing tests, UI build, lint/import checks, datetime checks and locale-aware language checks; record pre-existing failures separately.
+- [x] Update available project/MCP documentation and the English gateway guide without claiming the pre-existing core MCP enforces Vault policy.
 
-Planning estimate, not a measured commitment: one developer familiar with this codebase, approximately 8-12 working days across domain/persistence (2), owner authorization (2-3), external API/concurrency (2), UI/client (1-2), MCP/integration/docs (1-3), with overlap dependent on review. Remote OAuth/MCP and live retrieval are separately estimated after requirements are fixed.
+## 12. Review focus and release criteria
 
-## 11. Follow-up: live retrieval
+1. No ask/deny/unapproved record leaks through search snippets, result counts, detail, context, evidence, test preview or error shape (Tasks 1 and 3).
+2. No subject selector, request identity, owner session, shared subject name or stale tool listing expands a token's authority (Tasks 2-5).
+3. Revoke/pause/expiry committed before final admission prevents data delivery; concurrent single-use delivery admits at most one response (Tasks 2-3).
+4. Live mode observes current allow state; fixed mode rejects selected-member/version changes while ignoring unrelated changes (Tasks 1 and 3).
+5. Configuration templates use an actual executable and explain missing credentials; HTTP test success is never presented as proof of an MCP-host connection (Tasks 4-5).
 
-If needed, create a different grant mode `live_scope` with exact project/kind allowlists, budget/evidence limits, expiry and rate limits. Effective visibility is the intersection of grant scope, request scope, current confirmed/lifecycle state and external-use policy. New allow memories entering a scope must be explicitly explained when granting that mode.
+Release acceptance: from Authorization & MCP, an owner creates a bounded live grant, tests HTTP access, connects a tested MCP host, obtains only permitted current memories/context, and revokes both paths at once. A separate fixed mode delivers the exact reviewed Pack with one-use semantics. Audit contains no secrets or memory bodies. No prototype-only encryption, cloud, or write capability is represented as working.
 
-Start live mode with allow-only retrieval. Ask content stays unavailable until a trusted owner creates an approval bound to an exact response. Search/list/get/build/preview all require the same egress filter before any content or source metadata is returned. Never route live queries straight to the existing core MCP tools. Pagination needs bounded work, deterministic ordering, opaque scoped cursors and explicit snapshot/change semantics.
+## 13. Effort and deferred scope
 
-Full-history export, incremental synchronization/tombstones, remote HTTP MCP and third-party push connectors are independent follow-up requirements; do not infer them from Memory Pack transport support.
+Revised planning estimate for one developer familiar with the project: **12-18 working days**, including a review cycle. Approximate allocation: shared policy/bounded reads/fixed manifests 3-4; owner auth/grants/audit 2-3; external API/concurrency 2-3; prototype-based UI 2-3; MCP packaging/real host/integration/documentation 3-5, with overlap. These are planning ranges, not measured commitments. Real environment/client failures can change the range.
+
+Follow-ups: `propose_memory` pending-candidate workflow; owner approval requests for live ask content; semantic retrieval; reusable fixed allow-only deliveries; remote HTTP MCP/OAuth; stronger local process isolation; encrypted Vault lock; push connectors; full-history export and incremental synchronization. Each requires its own scope; none is silently included by a UI placeholder.
+
+## 14. Implementation record (2026-10-25)
+
+The Authorization & MCP page, protected owner session/CSRF boundary, live gateway,
+fixed Pack approval/delivery, evidence permission, pause/revoke/rotation, creation
+retry deduplication, metadata audit, scoped stdio MCP discovery and CLI are
+implemented. Management routes are consolidated in `routes/grants.py`; creation
+policy lives in `service/memo_vault_grants.py`.
+
+Feature verification: 56 focused backend/source/Pack tests passed. Real Chromium
+and an independent SDK stdio subprocess validate live access, fixed Pack
+authorization/delivery, revocation, and mobile layout. MCP SDK 1.30.0 is the tested
+protocol client; vendor desktop-host compatibility is not claimed.
+
+Checkboxes above track implementation and execution of checks, not a claim that
+the entire repository is green. Seven unrelated existing tests and one LLM setup
+error remain after full-suite failure recheck; see the validation report for
+names, environment filtering, architecture/date baseline issues and commands.
+
+Usage: [Vault authorization guide](../../memo-vault-authorization.md).

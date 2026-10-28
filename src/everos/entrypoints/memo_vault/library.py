@@ -107,6 +107,8 @@ class MemoVaultLibraryService:
         visible: list[dict[str, object]] = []
         missing: list[str] = []
         for row in registry:
+            if row["lifecycle_status"] == "deleted":
+                continue
             expiry_status = _expiry_status(row["valid_until"], now)
             lifecycle = _lifecycle_status(row["lifecycle_status"])
             if lifecycle == "active" and row["everos_memory_id"] not in canonical:
@@ -138,7 +140,10 @@ class MemoVaultLibraryService:
         no body, so downstream export code cannot accidentally fall back.
         """
         self._require_project(project_id)
-        registry = self._confirmed_rows(project_id)
+        registry = [
+            row for row in self._confirmed_rows(project_id)
+            if row["lifecycle_status"] != "deleted"
+        ]
         active = [
             row for row in registry
             if row["lifecycle_status"] == "active" and row["external_use"] != "deny"
@@ -209,7 +214,8 @@ class MemoVaultLibraryService:
                            m.revision, m.evidence_kind, m.external_use, m.valid_until,
                            m.confirmed_at, m.lifecycle_status, c.created_at AS recorded_at
                     FROM memories m LEFT JOIN candidates c ON c.id = m.id
-                    WHERE m.status = 'confirmed' AND m.namespace IN ({placeholders})"""
+                    WHERE m.status = 'confirmed' AND m.lifecycle_status != 'deleted'
+                      AND m.namespace IN ({placeholders})"""
         with self.store.connect() as connection:
             connection.execute("BEGIN")
             rows = connection.execute(query, namespaces).fetchall()
@@ -357,6 +363,55 @@ class MemoVaultLibraryService:
         if action == "correct" and (not content or not content.strip()):
             raise LibraryError("EMPTY_MEMORY_CONTENT", "Memory content cannot be empty.", 422)
 
+        corrected_content = content.strip() if action == "correct" and content else None
+        candidate_content = str(row["candidate_content"] or "").strip()
+        if (
+            action == "correct"
+            and corrected_content == candidate_content
+            and external_use is not None
+            and external_use != row["external_use"]
+        ):
+            # Export policy belongs to the local Vault registry. Do not route a
+            # policy-only edit through EverOS' canonical-memory lifecycle API.
+            with self.store.connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    """SELECT lifecycle_status, revision, external_use
+                       FROM memories
+                       WHERE id = ? AND namespace = ? AND status = 'confirmed'""",
+                    (memory_id, project_id),
+                ).fetchone()
+                if current is None:
+                    raise LibraryMemoryNotFound()
+                if current["lifecycle_status"] != "active":
+                    raise LibraryError(
+                        "MEMORY_LIFECYCLE_CONFLICT",
+                        "This memory is no longer active.",
+                        409,
+                    )
+                if (
+                    current["revision"] != expected_revision
+                    or current["external_use"] != row["external_use"]
+                ):
+                    raise LibraryError(
+                        "MEMORY_REVISION_CONFLICT",
+                        "This memory changed since it was loaded. "
+                        "Refresh before editing.",
+                        409,
+                    )
+                connection.execute(
+                    """UPDATE memories SET external_use = ?
+                       WHERE id = ? AND namespace = ?""",
+                    (external_use, memory_id, project_id),
+                )
+                connection.execute(
+                    """UPDATE candidates
+                       SET external_use = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (external_use, memory_id),
+                )
+            return await self.get_memory(project_id=project_id, memory_id=memory_id)
+
         identity = self.store.get_identity()
         try:
             receipt = await self.adapter.apply_memory_lifecycle(
@@ -375,8 +430,16 @@ class MemoVaultLibraryService:
         if receipt.get("lifecycle_status") != target_status:
             raise LibraryError("EVEROS_INVALID_LIFECYCLE_RESPONSE", "EverOS returned an unexpected lifecycle state.", 502)
         new_revision = receipt.get("revision")
-        if not isinstance(new_revision, int) or isinstance(new_revision, bool) or new_revision < expected_revision:
-            raise LibraryError("EVEROS_INVALID_LIFECYCLE_RESPONSE", "EverOS returned an invalid memory revision.", 502)
+        if (
+            not isinstance(new_revision, int)
+            or isinstance(new_revision, bool)
+            or new_revision <= expected_revision
+        ):
+            raise LibraryError(
+                "EVEROS_INVALID_LIFECYCLE_RESPONSE",
+                "EverOS did not advance the memory revision.",
+                502,
+            )
 
         now = datetime.now(UTC).isoformat()
         with self.store.connect() as connection:
