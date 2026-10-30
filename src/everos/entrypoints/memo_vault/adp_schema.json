@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeepSeek converter: paper ADP output profile v1",
+  "$comment": "Locally authored output subset, not historical upstream source. Based on arXiv:2510.24702v2 and neulab/agent-data-collection@d9c2cb280d32048d6446ee12ffb368c0e49a787e/README.md. This is not ATIF.",
+  "type": "object", "additionalProperties": false,
+  "required": ["id", "content", "details"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "details": {"type": "object"},
+    "content": {"type": "array", "items": {"oneOf": [
+      {"$ref": "#/$defs/text_observation"},
+      {"$ref": "#/$defs/message_action"},
+      {"$ref": "#/$defs/api_action"}
+    ]}}
+  },
+  "$defs": {
+    "text_observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class_", "source", "content", "name"],
+      "properties": {
+        "class_": {"const": "text_observation"},
+        "source": {"enum": ["user", "environment"]},
+        "content": {"type": "string"}, "name": {"type": ["string", "null"]}
+      }
+    },
+    "message_action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class_", "content", "description"],
+      "properties": {
+        "class_": {"const": "message_action"},
+        "content": {"type": "string"}, "description": {"type": ["string", "null"]}
+      }
+    },
+    "api_action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class_", "function", "kwargs", "description"],
+      "properties": {
+        "class_": {"const": "api_action"},
+        "function": {"type": "string", "minLength": 1},
+        "kwargs": {"type": "object"}, "description": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

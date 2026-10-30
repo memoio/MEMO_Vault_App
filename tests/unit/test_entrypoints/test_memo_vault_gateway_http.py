@@ -18,7 +18,8 @@ from tests.unit.test_entrypoints.test_api.test_routes.test_memo_vault_exports im
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMO_VAULT_PUBLIC_DEMO", "0")
     store = VaultStore(tmp_path)
     store.initialize()
     adapter = FakeAdapter()

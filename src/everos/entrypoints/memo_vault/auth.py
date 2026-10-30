@@ -59,6 +59,7 @@ class OwnerSecurity:
         self.allowed_hosts = {"localhost", "127.0.0.1", "::1"} | {
             urlsplit(o).hostname for o in self.allowed_origins
         }
+        self.public_demo = os.environ.get("MEMO_VAULT_PUBLIC_DEMO", "1") == "1"
         self.sessions: dict[str, float] = {}
         self.attempts: dict[str, deque[float]] = defaultdict(deque)
 
@@ -76,6 +77,8 @@ class OwnerSecurity:
         ).hexdigest()
 
     def authenticated(self, request: Request) -> bool:
+        if self.public_demo:
+            return True
         auth = request.headers.get("authorization", "")
         if auth:
             return hmac.compare_digest(auth, "Bearer " + self.secret)
@@ -92,7 +95,9 @@ class OwnerSecurity:
             return 401
         if (
             request.method not in {"GET", "HEAD", "OPTIONS"}
-            and not request.headers.get("authorization")
+            and not hmac.compare_digest(
+                request.headers.get("authorization", ""), "Bearer " + self.secret
+            )
             and not hmac.compare_digest(
                 request.headers.get("x-vault-csrf", ""),
                 self.csrf(request.cookies.get(COOKIE, "")),

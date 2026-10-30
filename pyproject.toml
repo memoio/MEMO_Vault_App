@@ -24,6 +24,7 @@ dependencies = [
     # Core data validation & config
     "pydantic>=2.7.1",
     "pydantic-settings>=2.0.0",
+    "jsonschema>=4.18,<5",
 
     # Storage stack (md-first three-piece set)
     # Upper bound: 0.35.0 embeds lance-rust v9 (large storage/encoding jump, not

@@ -111,9 +111,10 @@ Ollama 或其他已配置模型服务
 | 正式记忆库 | 查看、搜索、修正、撤销或删除正式记忆；关联 Vault 保存的项目范围、来源和生命周期信息。 |
 | Memory Pack | 从正式记忆按项目、类型和预算预览并导出 Markdown 或 `vault-memory/1` JSON；`deny` 不外发，`ask` 需要逐条选择并确认。导出前重新检查快照。 |
 | Knowledge 与导出中心 | 经用户批准的来源文档可投递到项目 Knowledge；导出中心支持选择已进入 Knowledge 的原文件，单个下载或打包 ZIP，可选择附带摘要及 Topic Markdown。仅归档在 Vault 的文件不会自动列入 Knowledge 导出。 |
+| ADP / ATIF 导出 Beta | 从已归档的 DeepSeek Harness 和 Claude 会话选择带有工具调用的完整轨迹，设置训练授权、检查脱敏明细并执行本地 Schema 校验，下载论文版 ADP 或 ATIF-v1.7 候选 JSONL。一个完整会话对应一条轨迹，不自动按主题拆分。 |
 | 授权与管理 | 所有者管理外部授权、凭据轮换和撤销，查看审计并暂停或开启外部访问。授权只在指定项目、类型、操作和期限内生效。 |
 | 独立网关与 MCP | 本地网关提供受授权限制的 HTTP 读取；可选的 stdio MCP 适配器将允许的工具暴露给 AI 客户端。现有 EverOS 核心 MCP 与此 Vault 授权适配器是两套入口。 |
-| 尚未开放的能力 | Cursor / Agent 专用导入和自动抓取在界面不可用；ADP Export 有 3 个占位接口，尚未实现。当前也没有远程 HTTP MCP/OAuth、云交付、多账号隔离或加密保险箱。 |
+| 尚未开放的能力 | Cursor / Agent 专用导入和自动抓取在界面不可用。当前也没有远程 HTTP MCP/OAuth、云交付、多账号隔离或加密保险箱。 |
 
 ### 三个专用解析器
 
@@ -124,6 +125,28 @@ Ollama 或其他已配置模型服务
 | Claude | 同一次导出的多个本地 ZIP 一次选齐；也可上传 Manifest，让服务下载仍可访问的链接。 | 多个 ZIP 合并为一个导入任务和 UMIF 包。会话走候选抽取；Claude 已保存的记忆作为平台摘要单独编辑审核；项目文档由用户决定是否批准进入 Knowledge。 | 本地 ZIP 可选 Manifest 核对文件名；不带 Manifest 时需要用户确认选齐。多个来源项目映射到同一目标项目需确认；过期链接可补交原文件名的 ZIP。不是自动按来源创建多个目标项目。 |
 
 通用 Markdown、TXT、JSON 和受限 ZIP 走通用解析路径。没有对话角色结构的普通文本当前按用户消息处理；尚未将所有通用文件自动当作 Knowledge 文档生成 Topic。
+
+### 三个平台测试数据导入
+
+启动 Ollama、EverOS、Vault 后端和前端。管理页面默认无需输入所有者凭据；如已开启认证，则先使用所有者凭据连接。导入不需要外部网关；浏览器文件选择框读取的是浏览器所在电脑的文件。
+
+测试数据位于旧电脑 WSL 的 `/root/EverOS/docs/memo_input/`：
+
+- **DeepSeek**：在导入页面选择 DeepSeek 和目标项目，上传 `deepseek/deepseek_web_smoke_test.zip` 测试网页导出；`deepseek/dsh-session-session-be49397b-fd45-4c34-84d6-6fc724f851b3.zip` 可单独测试 Harness 导入。
+- **ChatGPT**：选择 ChatGPT 导出和目标项目，上传 `ChatGPT/c0b40102f78911d98d4d67cdb9e6e6be40a9e4ccb390c178eb0388c971f74fe3-2026-10-26-14-50-23-a6ab51ccb8a14df1920bb186c6f84f45.zip`。
+- **Claude**：选择 Claude 导出和目标项目，一次选中 `Claude/` 中同一批次的 `memories-000.zip`、`conversations-000.zip`、`projects-000.zip`、`light_metadata-000.zip`；可选对应 Manifest 核对文件名，不提供 Manifest 时按提示确认选齐。不要混合不同批次。
+
+各平台均按页面检查预览、确认归档、抽取候选，并在“候选审核”中确认后才进入正式记忆。Claude 平台摘要需单独审核；文档或附件需批准并成功投递后才进入 Knowledge。
+
+将三个测试文件夹从**旧电脑 WSL**复制到新服务器，输入新服务器 root 密码：
+
+```bash
+ssh -p 15322 root@183.240.197.189 'mkdir -p /root/workspace/MEMO_Vault_App/docs/memo_input'
+scp -P 15322 -r /root/EverOS/docs/memo_input/{deepseek,ChatGPT,Claude} \
+  root@183.240.197.189:/root/workspace/MEMO_Vault_App/docs/memo_input/
+```
+
+如果 WSL 用户无法读取 `/root/EverOS`，对 `scp` 使用 `sudo`。复制到服务器不会自动让本机浏览器的文件选择框看到这些文件；在本机浏览器上传时，仍需从本机选择文件。
 
 ### 从导入到使用的共同流程
 
@@ -138,9 +161,30 @@ Ollama 或其他已配置模型服务
 
 候选抽取 API 当前允许单条消息最多 1,000,000 个字符；超过该限制的消息需要先处理。大批次和长会话会产生大量模型调用，处理时间及成功率受模型、上下文窗口和服务配置影响。
 
+### ADP 导出 Beta 和脱敏规则
+
+ADP 导出使用 Agent 轨道中的真实工具调用及结果，并读取归档来源还原上下文。DeepSeek Harness 从原始 v4 文件转换，Claude 按原始消息块顺序转换；调用 ID、来源文件哈希和调用结果等检查失败时，页面显示原因并阻止该次下载。没有真实工具调用的会话不能选作轨迹。当前不支持按主题拆分会话。
+
+使用步骤：
+
+1. 在“ADP / ATIF 导出 Beta”选择已归档的轨迹；每行代表一个完整会话，可能包含多个主题。
+2. 逐条或批量设置训练授权，默认为关闭。论文版 ADP 写入 `details.training_consent`，ATIF 写入 `extra.training_consent`；授权仅代表本人的选择，不代表已经执行训练，也不能代替轨迹中其他人的授权。
+3. 点击“预览”查看脱敏明细。明细按消息、工具参数、工具结果和元数据分组，显示 JSON 位置和替换后的上下文；同一信息可能在正文和元数据中分别出现，因此可能重复计数。完整候选 JSON 可展开查看。
+4. 选择论文版 ADP 或 ATIF-v1.7 作为预览与校验格式，再点击“Schema 校验”。分别使用本项目维护的对应格式子集 Schema，校验不判断内容是否真实、任务是否成功，也不能证明数据已完全脱敏；这些 Schema 不是官方完整验证器。
+5. 校验通过后点击对应的“下载 ADP JSONL”或“下载 ATIF JSONL”，每行是一条完整会话。论文版 ADP 根字段为 `id`、`content`、`details`；ATIF 使用 `schema_version`、`session_id`、`agent`、`steps` 和 `extra` 等字段。切换格式、来源或授权变化后需重新校验。导出只生成候选数据，不执行工具或训练。
+
+当前规则递归检查导出对象的消息、工具参数、工具结果和 `details`，包括可解析为完整 JSON 对象或数组的字符串：
+
+| 检查位置 | 当前匹配规则 | 处理 |
+|---|---|---|
+| JSON 字段名 | 字段名包含 `secret`、`token`、`password`、`passwd`、`authorization`、`api_key` / `api-key` 或 `private_key` / `private-key`，不区分大小写 | 将整个字段值替换为 `[REDACTED]`。已知模型用量字段（如 `inputTokens`、`outputTokens`）为数字、布尔值或空值时不遮盖。 |
+| 普通文本 | 类似 `password=xxx`、`token: xxx`、`api_key=xxx`、`access_token=xxx`、`refresh_token=xxx`、`secret=xxx`、`authorization=xxx` 的形式 | 保留字段名和分隔符，将规则匹配到的值替换为 `[REDACTED]`。 |
+
+“脱敏 0 处”只表示这些规则没有匹配到内容，不代表没有敏感信息。当前没有专门识别姓名、手机号、邮箱、身份证号、地址、客户名称、文件路径、IP 地址，或缺少上述字段名提示的密钥。普通文本规则也不能完整处理所有凭证格式，例如 `authorization: Bearer xxx` 可能只遮盖 `Bearer` 而留下后面的令牌。分享或训练前应人工检查完整内容；不要把 Schema 校验通过或零命中当成隐私安全保证。详细说明见 [ADP 导出 Beta](docs/adp-export-beta.zh-CN.md)。
+
 ### 授权和外部使用
 
-1. 启动 Vault 管理 API、EverOS 和独立网关，用本地所有者凭据连接前端，在“授权与管理”中开启外部访问。新 Vault 的网关初始为暂停；暂停状态会保留。
+1. 启动 Vault 管理 API、EverOS 和独立网关；如已开启管理页面认证，先用所有者凭据连接前端。在“授权与管理”中开启外部访问。新 Vault 的网关初始为暂停；暂停状态会保留。
 2. 创建授权，指定主体名称、明确的项目、操作、记忆类型、用途和有效期。项目按 ID 精确匹配；默认 24 小时，可选 1–720 小时。外部凭据只显示一次，后续只能轮换或重新创建。
 3. **动态范围**允许在有效期内读取符合范围、已确认、有效且 `allow` 的当前记忆；日后新增的符合条件记忆也可进入该范围。`ask` 和 `deny` 不包含在动态授权内。
 4. **固定 Pack**先在 Memory Pack 中选择并确认内容，创建短期审批草稿，再完成授权。授权允许一次内容交付；所选记忆或策略变化时，旧授权包会失效，需要重新审核。
@@ -156,9 +200,9 @@ Ollama 或其他已配置模型服务
 | 服务 | 不同操作 | 说明 |
 |---|---:|---|
 | EverOS 核心 API（8000） | 22 | 20 个业务操作同时挂在 v1 和 v2；另有 `/health`、`/metrics`，实际为 42 个方法与路径组合。 |
-| Vault 管理 API（8765） | 60 | 含 2 个所有者会话操作；3 个 ADP 操作为未实现占位。 |
+| Vault 管理 API（8765） | 61 | 含 2 个所有者会话操作及 4 个 ADP 操作。 |
 | 外部网关（8766） | 8 | 7 个授权业务操作和 1 个 `/health`，独立于管理 API。 |
-| 合计 | 90 | 三个服务的声明数合计；不把核心 v1/v2 视为两套功能。 |
+| 合计 | 91 | 三个服务的声明数合计；不把核心 v1/v2 视为两套功能。 |
 
 核心 API：记忆 4、Vault 候选 3、Knowledge 11、OME 1、级联控制 1、健康和指标 2。Knowledge 的新增操作包含原文件和 ZIP 导出。
 
@@ -170,7 +214,7 @@ Ollama 或其他已配置模型服务
 | `/import-jobs/*` | 9 | Claude 获取任务、恢复、补交和预览。 |
 | 导入内容审核 | 9 | 查看和审核平台摘要、文档及附件，投递或核对 Knowledge。 |
 | `/candidates/*`、`/memories/*` | 12 | 候选新增、审核与来源；正式记忆查看、修正和生命周期管理。 |
-| `/packs/*`、`/adp/*` | 5 | Memory Pack 预览/导出；ADP 的 3 个接口尚未实现。 |
+| `/packs/*`、`/adp/*` | 6 | Memory Pack 预览/导出；ADP 轨迹列表、训练授权、校验与下载。 |
 | `/knowledge-export/*` | 4 | Knowledge 文档列表、详情、原件及 ZIP。 |
 | `/grants/*`、`/gateway/*` | 10 | 授权、固定 Pack 草稿、轮换、撤销、审计和网关状态/开关。 |
 
@@ -374,7 +418,7 @@ export MEMO_VAULT_EVEROS_URL="http://127.0.0.1:8000"
 uvicorn everos.entrypoints.memo_vault.app:app --host 127.0.0.1 --port 8765
 ```
 
-Vault 首次启动会在数据目录生成仅供本机所有者使用的 `owner-bootstrap.token`。管理 API 的健康接口也需要所有者认证；在另一个本地终端检查时可以执行：
+Vault 首次启动会在数据目录生成仅供本机所有者使用的 `owner-bootstrap.token`。默认免 token 时，健康接口可直接访问；开启认证后，可在另一个本地终端使用凭据检查：
 
 ```bash
 cd ~/EverOS
@@ -383,7 +427,7 @@ curl -H "Authorization: Bearer $VAULT_OWNER_TOKEN" http://127.0.0.1:8765/api/v1/
 unset VAULT_OWNER_TOKEN
 ```
 
-响应中的 `data.everos_base_url` 应为 `http://127.0.0.1:8000`，`data.everos_status` 应为 `online`，`data.data_dir` 应指向本仓库的 `.memo-vault`。未认证时返回 401 是预期的访问控制，不代表服务没有启动。不要公开所有者凭据。
+响应中的 `data.everos_base_url` 应为 `http://127.0.0.1:8000`，`data.everos_status` 应为 `online`，`data.data_dir` 应指向本仓库的 `.memo-vault`。管理页面默认免 token；只有显式开启认证后，未认证请求返回 401 才是预期行为。不要公开所有者凭据。
 
 ### 终端 5：启动前端
 
@@ -392,7 +436,9 @@ cd ~/EverOS/apps/memo-vault-ui
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173`。本机 Vite 开发模式会尝试读取 Vault 数据目录的 `owner-bootstrap.token` 并自动填入，点击连接即可；如果自动填充失败，可手动读取并粘贴。若 Vault 使用其他数据目录，启动前端时应设置相同的 `MEMO_VAULT_DATA_DIR`。生产构建不提供自动填充。
+打开 `http://127.0.0.1:5173`，默认无需输入 token。要启用所有者 token 登录，在启动 Vault 管理 API 的环境中设置 `MEMO_VAULT_PUBLIC_DEMO=0` 并重启；恢复免 token 可移除该变量或设为 `1` 后重启。部署网址还需配置在 `MEMO_VAULT_UI_ORIGINS` 中。免 token 时任何能访问管理网址的人都可操作 Vault，应通过可信内网、VPN 或反向代理限制访问。
+
+开启认证后，本机 Vite 开发模式会尝试读取 Vault 数据目录的 `owner-bootstrap.token` 并自动填入，点击连接即可；如果自动填充失败，可手动读取并粘贴。若 Vault 使用其他数据目录，启动前端时应设置相同的 `MEMO_VAULT_DATA_DIR`。生产构建不提供自动填充。
 
 这是所有者凭据，与后续签发给外部应用的凭据不同。开发模式下能访问本机开发服务器的客户端可能取得该凭据，应仅供可信的本机测试使用。成功连接后浏览器使用约 8 小时的会话，管理 API 重启后需要重新连接。凭据不要提交到仓库或发给其他人。
 
@@ -434,7 +480,7 @@ pip install -e '.[mcp]'
 - Ollama：`ollama list` 和 `/api/tags` 是否包含上述两个模型；EverOS 的 `.everos-ollama/everos.toml` 是否指向同一 Ollama 地址。
 - EverOS：`/health` 是否可达，终端 3 是否有模型连接、超时或结构化输出错误。
 - Vault：使用上面的所有者认证检查 `/api/v1/system/health`；确认 EverOS 地址和 `online`，再查看终端 4 中对应批次的错误。
-- 前端：是否已使用所有者凭据连接 Vault，导入是否已归档。对失败批次使用“重试抽取”；抽取失败不会删除已归档原文件。
+- 前端：确认 Vault 可连接；若已启用认证，检查所有者凭据。确认导入是否已归档。对失败批次使用“重试抽取”；抽取失败不会删除已归档原文件。
 - Claude：下载链接不可访问时可按原文件名补交 ZIP 并重试；若投递 Knowledge 报重排未配置，检查 EverOS 的 embedding 与 rerank 配置，参考 [本地重排模型](docs/local-rerank.md)。投递结果不确定时先核对，不要盲目重复提交。
 - 外部访问：检查 8766 进程、网关是否已启用、授权是否过期/撤销，以及项目和操作是否在授权范围内。MCP 还要检查客户端实际启动的 Python 环境和可选依赖。
 

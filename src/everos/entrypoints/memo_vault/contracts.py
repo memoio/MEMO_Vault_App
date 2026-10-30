@@ -216,4 +216,13 @@ class PackExportData(BaseModel):
 
 
 class AdpValidateRequest(BaseModel):
-    trace_ids: list[str] = Field(min_length=1)
+    trace_ids: list[str] = Field(min_length=1, max_length=100)
+    format: Literal["adp", "atif"] = "adp"
+
+
+class AdpConsentRequest(AdpValidateRequest):
+    consent: bool
+
+
+class AdpExportRequest(AdpValidateRequest):
+    preview_sha256: str = Field(min_length=64, max_length=64)

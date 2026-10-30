@@ -47,7 +47,7 @@ async def health(request: Request) -> ApiEnvelope[HealthData]:
                 "vault_gateway": "ready",
                 "vault_mcp_stdio": "ready" if find_spec("mcp") else "not_started",
                 "vault_mcp_remote": "not_started",
-                "adp_export": "not_started",
+                "adp_export": "ready",
             },
         ),
     )

@@ -5,6 +5,7 @@ import ClaudeImport from "./ClaudeImport";
 import ChatGPTReview from "./ChatGPTReview";
 import KnowledgeExport from "./KnowledgeExport";
 import TrackInventory from "./TrackInventory";
+import AdpExport from "./AdpExport";
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import {
   cancelPreview,
@@ -56,7 +57,7 @@ const pages = [
   { id: "library", title: "记忆库", description: "浏览已确认并写入 EverOS 的正式记忆。" },
   { id: "pack", title: "导出中心", description: "导出已确认的正式记忆或项目 Knowledge 原始文档。" },
   { id: "authorization", title: authText.title, description: authText.description },
-  { id: "adp", title: "ADP 导出 Beta", description: "ADP 导出功能将在后续阶段实现。" },
+  { id: "adp", title: "ADP / ATIF 导出 Beta", description: "真实 Agent 轨迹 → ADP / ATIF 候选数据" },
 ] as const;
 const wizardSteps = ["选择来源", "上传与检查", "解析预览", "抽取与审核", "完成"];
 const sources = [
@@ -1054,7 +1055,9 @@ export default function App() {
           </div>
         </header>
 
-        {pageId === "authorization" ? (
+        {pageId === "adp" ? (
+          <AdpExport />
+        ) : pageId === "authorization" ? (
           <AuthorizationMcpPage projects={projects} draft={authorizationDraft} onOpenPack={() => setPageId("pack")} onDraftUsed={() => setAuthorizationDraft(null)} />
         ) : pageId === "pack" ? (
           <div className="export-center"><nav className="export-tabs" aria-label="导出类型"><button className={exportTab === 'memory' ? 'selected' : ''} onClick={() => setExportTab('memory')}>Memory Pack</button><button className={exportTab === 'knowledge' ? 'selected' : ''} onClick={() => setExportTab('knowledge')}>Knowledge 文档</button></nav>
