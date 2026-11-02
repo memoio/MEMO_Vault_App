@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
+import os
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -163,6 +166,12 @@ def _persist_candidates(
                 or not source_ids
                 or not all(isinstance(source_id, str) for source_id in source_ids)
             ):
+                logger.warning(
+                    "invalid_extraction_candidate batch_id=%s kind=%s memory_type=%s content_length=%s source_count=%s",
+                    batch_id, kind, memory_type,
+                    len(content) if isinstance(content, str) else None,
+                    len(source_ids) if isinstance(source_ids, list) else None,
+                )
                 raise HTTPException(
                     status_code=502,
                     detail={
@@ -242,7 +251,7 @@ def _persist_candidates(
                 (candidate_id, batch_id, scope, kind, memory_type,
                  json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
                  json.dumps(source_segment, ensure_ascii=False) if source_segment is not None else None,
-                 content.strip()),
+                 content if isinstance(metadata, dict) and metadata.get("episode_group_id") else content.strip()),
             )
             if source_segment is not None:
                 connection.execute(
@@ -339,7 +348,9 @@ async def import_status(batch_id: str, request: Request) -> ApiEnvelope[dict[str
     store = request.app.state.vault_store
     with store.connect() as connection:
         row = connection.execute(
-            """SELECT id, status, extraction_status, error_stage, error_code,
+            """SELECT id, id AS batch_id, source_type, original_filename, app_id, project_id, user_id, agent_id,
+                      file_sha256 AS raw_file_hash, conversation_count, message_count, duplicate_message_count, archived_at,
+                      status, extraction_status, extraction_method, extraction_result_json, error_stage, error_code,
                       error_message, umif_package_relpath, umif_package_id,
                       umif_record_count, umif_validation_json
                FROM import_batches WHERE id = ?""", (batch_id,),
@@ -347,8 +358,62 @@ async def import_status(batch_id: str, request: Request) -> ApiEnvelope[dict[str
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "IMPORT_BATCH_NOT_FOUND", "message": "Import batch does not exist."})
     data = dict(row)
+    with store.connect() as connection:
+        data["candidate_count"] = connection.execute("SELECT COUNT(*) FROM candidates WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+    result_json = data.pop("extraction_result_json")
+    data["extraction_result"] = json.loads(result_json) if result_json else None
     data["umif_validation"] = json.loads(data.pop("umif_validation_json") or "{}")
     return ApiEnvelope(request_id=uuid.uuid4().hex, data=data)
+
+
+logger = logging.getLogger(__name__)
+
+
+@router.post("/{batch_id}/extract/start", status_code=202)
+async def start_extraction(batch_id: str, request: Request) -> ApiEnvelope[dict[str, object]]:
+    """Claim an archived batch and return without waiting for model inference."""
+    store = request.app.state.vault_store
+    with store.connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT extraction_status FROM import_batches WHERE id = ?", (batch_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Import batch not found")
+        if row["extraction_status"] in ("running", "queued", "extracted"):
+            raise HTTPException(status_code=409, detail={"code": "EXTRACTION_ALREADY_COMPLETED" if row["extraction_status"] == "extracted" else "EXTRACTION_ALREADY_RUNNING", "message": "Extraction already running or completed."})
+        connection.execute(
+            "UPDATE import_batches SET extraction_status = 'queued', extraction_result_json = NULL, error_stage = NULL, error_code = NULL, error_message = NULL WHERE id = ?",
+            (batch_id,),
+        )
+
+    async def run() -> None:
+        try:
+            async with request.app.state.extraction_semaphore:
+                # Claim immediately after releasing the reservation, without an await.
+                with store.connect() as connection:
+                    connection.execute(
+                        "UPDATE import_batches SET extraction_status = 'not_started' "
+                        "WHERE id = ? AND extraction_status = 'queued'", (batch_id,)
+                    )
+                request.state.background_extraction = True
+                result = await extract_import(batch_id, request)
+                with store.connect() as connection:
+                    connection.execute(
+                        "UPDATE import_batches SET extraction_result_json = ? WHERE id = ?",
+                        (json.dumps(result.data), batch_id),
+                    )
+        except asyncio.CancelledError:
+            with store.connect() as connection:
+                connection.execute("UPDATE import_batches SET extraction_status = 'failed', error_code = 'EXTRACTION_INTERRUPTED', error_message = 'Extraction interrupted; retry after checking the service.' WHERE id = ? AND extraction_status IN ('queued', 'running')", (batch_id,))
+            raise
+        except Exception:
+            logger.exception("background_extraction_failed batch_id=%s", batch_id)
+            with store.connect() as connection:
+                connection.execute("UPDATE import_batches SET extraction_status = 'failed', error_code = COALESCE(error_code, 'EXTRACTION_FAILED'), error_message = COALESCE(error_message, 'Extraction failed; inspect server logs.') WHERE id = ? AND extraction_status IN ('queued', 'running', 'not_started', 'extracted')", (batch_id,))
+
+    task = asyncio.create_task(run())
+    request.app.state.extraction_tasks.add(task)
+    task.add_done_callback(request.app.state.extraction_tasks.discard)
+    return ApiEnvelope(request_id=uuid.uuid4().hex, data={"batch_id": batch_id, "status": "queued"})
 
 
 @router.post("/{batch_id}/extract", response_model=ApiEnvelope[dict[str, object]])
@@ -379,7 +444,7 @@ async def extract_import(
                     "message": "This batch has already been extracted.",
                 },
             )
-        if batch["extraction_status"] == "running":
+        if batch["extraction_status"] in ("running", "queued"):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -437,7 +502,7 @@ async def extract_import(
         else:
             no_new_messages = False
             deferred_tool_messages = False
-        if not no_new_messages and not deferred_tool_messages:
+        if not no_new_messages and any(message["role"] in {"user", "assistant"} for message in messages):
             claimed = connection.execute(
                 """UPDATE import_batches
                    SET extraction_status = 'running',
@@ -507,7 +572,7 @@ async def extract_import(
     settings = get_settings()
     adapter = EverOSHttpAdapter(
         settings.everos_base_url,
-        timeout_seconds=settings.everos_timeout_seconds,
+        timeout_seconds=(float(os.environ.get("MEMO_VAULT_EXTRACTION_TIMEOUT_SECONDS", "7200")) if getattr(getattr(request, "state", None), "background_extraction", False) else settings.everos_timeout_seconds),
     )
     try:
         result = await adapter.extract_import(

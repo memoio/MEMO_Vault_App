@@ -293,6 +293,8 @@ interface Envelope<T> {
 }
 
 async function requestData<T>(response: Response): Promise<T> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("json")) throw new Error(`Vault API 返回了非 JSON 响应（HTTP ${response.status}），请检查服务或代理。`);
   const body = await response.json();
   if (!response.ok) {
     const detail = body?.detail;
@@ -452,12 +454,42 @@ export async function commitImport(
   );
 }
 
+export async function getImportStatus(batchId: string): Promise<ImportBatch & { extraction_result: ExtractionResult | null; error_message: string | null }> {
+  return requestData(await ownerFetch(`/api/v1/imports/${encodeURIComponent(batchId)}/status`));
+}
+
 export async function extractImport(batchId: string): Promise<ExtractionResult> {
-  return requestData<ExtractionResult>(
-    await ownerFetch(`/api/v1/imports/${encodeURIComponent(batchId)}/extract`, {
-      method: "POST",
-    }),
-  );
+  const base = `/api/v1/imports/${encodeURIComponent(batchId)}`;
+  const start = await ownerFetch(`${base}/extract/start`, { method: "POST" });
+  if (start.status === 409) {
+    const contentType = start.headers.get("content-type") ?? "";
+    if (!contentType.includes("json")) throw new Error(`Vault API 返回了非 JSON 响应（HTTP ${start.status}），请检查服务或代理。`);
+    const body = await start.json();
+    if (body?.detail?.code !== "EXTRACTION_ALREADY_RUNNING") {
+      throw new Error(body?.detail?.message || "无法启动抽取。");
+    }
+  } else {
+    await requestData<{ status: string }>(start);
+  }
+  let terminalWithoutResult = 0;
+  for (;;) {
+    await new Promise<void>(resolve => setTimeout(resolve, 3000));
+    const state = await requestData<{ extraction_status: string; extraction_result?: ExtractionResult | null; error_message?: string | null }>(
+      await ownerFetch(`${base}/status`),
+    );
+    if (state.extraction_result) return state.extraction_result;
+    if (state.extraction_status === "failed" || state.extraction_status === "cancelled") {
+      throw new Error(state.error_message || "后台抽取已停止，原文仍已保存。请检查服务日志后重试。");
+    }
+    if (state.extraction_status === "extracted" || state.extraction_status === "not_started") {
+      if (++terminalWithoutResult >= 4) throw new Error("抽取结果未能保存，请检查批次状态和服务日志。 ");
+    } else {
+      terminalWithoutResult = 0;
+    }
+    if (!["queued", "running", "extracted", "not_started"].includes(state.extraction_status)) {
+      throw new Error(`未知抽取状态：${state.extraction_status}`);
+    }
+  }
 }
 
 export async function getCandidates(filters: { status?: string; kind?: string; origin?: string; evidence?: string } = {}): Promise<ReviewCandidate[]> {

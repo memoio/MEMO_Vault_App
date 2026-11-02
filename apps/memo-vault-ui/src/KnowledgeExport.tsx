@@ -72,6 +72,29 @@ export default function KnowledgeExport({ projects }: { projects: ProjectSpace[]
     } catch (reason) { setError(String(reason)); }
     finally { setBusy(false); }
   }
+  async function prepareArchive() {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      const response = await ownerFetch('/api/v1/knowledge-export/zip/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, doc_ids: selected, include_derived: includeDerived }),
+      });
+      if (!response.ok) throw new Error(`无法启动 ZIP 导出：HTTP ${response.status}`);
+      const job = (await response.json() as Envelope<{ job_id: string }>).data;
+      for (;;) {
+        await new Promise<void>(resolve => setTimeout(resolve, 3000));
+        const status = await jsonData<{ status: string; error_message?: string | null }>(`/api/v1/knowledge-export/zip/jobs/${job.job_id}`);
+        if (status.status === 'completed') {
+          await saveDownload(await ownerFetch(`/api/v1/knowledge-export/zip/jobs/${job.job_id}/download`), 'knowledge-export.zip');
+          break;
+        }
+        if (status.status === 'failed') throw new Error(status.error_message || 'ZIP 准备失败。');
+        if (!['queued', 'running'].includes(status.status)) throw new Error(`未知 ZIP 导出状态：${status.status}`);
+      }
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(false); }
+  }
   const chosen = result?.documents.filter(item => selected.includes(item.doc_id)) ?? [];
   const missing = chosen.filter(item => !item.original_available).length;
   const size = chosen.reduce((total, item) => total + item.original_bytes + (includeDerived ? item.derived_bytes ?? 0 : 0), 0);
@@ -103,7 +126,7 @@ export default function KnowledgeExport({ projects }: { projects: ProjectSpace[]
     <div className="knowledge-export-summary"><h3>ZIP 导出预览</h3><p>{chosen.length} 篇原件 · 文件约 {(size / 1024 / 1024).toFixed(2)} MB · {missing} 篇缺失 · 包含 manifest.json{includeDerived ? '、摘要和 Topic Markdown' : ''}</p>
       <label><input type="checkbox" checked={includeDerived} onChange={event => setIncludeDerived(event.target.checked)} /> 附带 EverOS 生成的摘要与 Topic Markdown</label>
       <p className="subtle">一次最多 100 篇、512 MiB。此处仅选择当前页中的文档。</p>
-      <button className="primary-button" disabled={busy || !chosen.length || missing > 0} onClick={() => void download('/api/v1/knowledge-export/zip', 'knowledge-export.zip', { project_id: projectId, doc_ids: selected, include_derived: includeDerived })}>{busy ? '正在下载…' : '下载所选 ZIP'}</button>
+      <button className="primary-button" disabled={busy || !chosen.length || missing > 0} onClick={() => void prepareArchive()}>{busy ? '后台准备中…' : '下载所选 ZIP'}</button>
     </div>
   </section>;
 }

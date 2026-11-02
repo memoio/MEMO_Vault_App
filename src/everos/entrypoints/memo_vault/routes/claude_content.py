@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
+import os
 import json
 import mimetypes
 import uuid
@@ -10,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -26,6 +29,7 @@ from ..source_inventory import source_members
 from .imports import _raise_api_error
 
 router = APIRouter(prefix="/imports", tags=["memo-vault-claude-content"])
+logger = logging.getLogger(__name__)
 
 
 def _load(request: Request, batch_id: str) -> tuple[Any, Any]:
@@ -63,6 +67,9 @@ def _content(request: Request, batch_id: str) -> dict[str, Any]:
                 "SELECT * FROM umif_record_map WHERE batch_id=?", (batch_id,)
             )
         }
+        jobs = {(r["record_file"], r["record_id"]): dict(r) for r in c.execute(
+            "SELECT record_file,record_id,status,target_id FROM knowledge_delivery_jobs WHERE batch_id=?", (batch_id,)
+        )}
         reviews = {
             r["source_record_id"]: dict(r)
             for r in c.execute(
@@ -83,11 +90,13 @@ def _content(request: Request, batch_id: str) -> dict[str, Any]:
                 payload["text"] = full_text[:4000]
                 payload["text_length"] = len(full_text)
                 payload["text_truncated"] = len(full_text) > 4000
+            job = jobs.get((name, r.record_id))
+            job_status = {"queued": "delivery_queued", "running": "delivery_running", "reconciling": "delivery_reconciling", "unknown": "delivery_unknown", "delivered": "delivered"}.get(job["status"]) if job else None
             results.append({
                 "record_id": r.record_id,
                 **payload,
-                "status": states.get(r.record_id, {}).get("status", "archived"),
-                "target_id": states.get(r.record_id, {}).get("target_id"),
+                "status": job_status or states.get(r.record_id, {}).get("status", "archived"),
+                "target_id": (job.get("target_id") if job_status == "delivered" else None) or states.get(r.record_id, {}).get("target_id"),
                 "review_decision": reviews.get(r.record_id, {}).get("decision"),
                 "reviewed_at": reviews.get(r.record_id, {}).get("decided_at"),
             })
@@ -357,6 +366,11 @@ def _review_document(request: Request, batch_id: str, record_id: str, decision: 
                                   "Review the linked document instead.", status_code=409)
     with request.app.state.vault_store.connect() as c:
         c.execute("BEGIN IMMEDIATE")
+        if c.execute(
+            "SELECT 1 FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND status IN ('queued','running','reconciling','unknown','delivered')",
+            (batch_id, record_id),
+        ).fetchone():
+            raise ImportWorkflowError("CLAUDE_REVIEW_LOCKED", "Delivery has already started.", status_code=409)
         mapped = c.execute(
             "SELECT status FROM umif_record_map WHERE batch_id=? AND source_record_id=?",
             (batch_id, record_id),
@@ -429,9 +443,90 @@ async def deliver_asset(
     return await _deliver_record(batch_id, record_id, body, request, "assets.jsonl")
 
 
+@router.post("/{batch_id}/documents/{record_id}/deliver/start", status_code=202)
+async def start_document_delivery(batch_id: str, record_id: str, body: DocumentDelivery, request: Request):
+    return await _start_delivery(batch_id, record_id, body, request, "documents.jsonl")
+
+
+@router.post("/{batch_id}/assets/{record_id}/deliver/start", status_code=202)
+async def start_asset_delivery(batch_id: str, record_id: str, body: DocumentDelivery, request: Request):
+    return await _start_delivery(batch_id, record_id, body, request, "assets.jsonl")
+
+
+@router.get("/{batch_id}/documents/{record_id}/deliver/status")
+async def document_delivery_status(batch_id: str, record_id: str, request: Request):
+    return _delivery_status(batch_id, record_id, request, "documents.jsonl")
+
+
+@router.get("/{batch_id}/assets/{record_id}/deliver/status")
+async def asset_delivery_status(batch_id: str, record_id: str, request: Request):
+    return _delivery_status(batch_id, record_id, request, "assets.jsonl")
+
+
+def _delivery_status(batch_id: str, record_id: str, request: Request, record_file: str):
+    with request.app.state.vault_store.connect() as c:
+        row = c.execute("SELECT status,target_id,error_code,error_message FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id, record_id, record_file)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "DELIVERY_JOB_NOT_FOUND", "message": "Delivery job not found."})
+    data = dict(row)
+    if data["status"] == "running":
+        data["status"] = "submitting"
+    return ApiEnvelope(request_id=uuid.uuid4().hex, data=data)
+
+
+async def _start_delivery(batch_id: str, record_id: str, body: DocumentDelivery, request: Request, record_file: str):
+    if not body.confirmed:
+        raise HTTPException(status_code=422, detail={"code": "CLAUDE_DOCUMENT_CONFIRMATION_REQUIRED", "message": "Confirm the document before delivery."})
+    store = request.app.state.vault_store
+    with store.connect() as c:
+        row = c.execute(
+            "SELECT m.target_type FROM umif_record_map m JOIN import_batches b ON b.id=m.batch_id WHERE m.batch_id=? AND m.source_record_id=? AND b.source_type IN ('claude','chatgpt')",
+            (batch_id, record_id),
+        ).fetchone()
+    expected_type = "document" if record_file == "documents.jsonl" else "asset"
+    if row is None or row["target_type"] != expected_type:
+        raise HTTPException(status_code=404, detail={"code": "CLAUDE_RECORD_NOT_FOUND", "message": "File not found."})
+    with store.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        job = c.execute("SELECT status FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id, record_id, record_file)).fetchone()
+        if job and job["status"] in ("queued", "running", "reconciling", "unknown", "delivered"):
+            raise HTTPException(status_code=409, detail={"code": "DELIVERY_ALREADY_STARTED", "message": "Delivery is running, completed, or requires reconciliation."})
+        c.execute("INSERT INTO knowledge_delivery_jobs (batch_id,record_id,record_file,status) VALUES (?,?,?,'queued') ON CONFLICT(batch_id,record_id,record_file) DO UPDATE SET status='queued',target_id=NULL,error_code=NULL,error_message=NULL", (batch_id,record_id,record_file))
+
+    async def run():
+        running = False
+        try:
+            async with request.app.state.extraction_semaphore:
+                with store.connect() as c:
+                    c.execute("UPDATE knowledge_delivery_jobs SET status='running' WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id,record_id,record_file))
+                running = True
+                result = await _deliver_record(batch_id, record_id, body, request, record_file, background=True)
+                with store.connect() as c:
+                    c.execute("UPDATE knowledge_delivery_jobs SET status='delivered',target_id=? WHERE batch_id=? AND record_id=? AND record_file=?", (result.data.get("target_id"),batch_id,record_id,record_file))
+        except asyncio.CancelledError:
+            with store.connect() as c:
+                if running:
+                    c.execute("UPDATE umif_record_map SET status='delivery_unknown' WHERE batch_id=? AND source_record_id=? AND status='submitting'", (batch_id,record_id))
+                c.execute("UPDATE knowledge_delivery_jobs SET status=?,error_code='DELIVERY_INTERRUPTED',error_message=? WHERE batch_id=? AND record_id=? AND record_file=?", ("unknown" if running else "failed", "Delivery interrupted; reconcile before retry." if running else "Delivery stopped before starting; retry.",batch_id,record_id,record_file))
+            raise
+        except Exception as exc:
+            logger.exception("knowledge_delivery_failed batch_id=%s record_id=%s", batch_id, record_id)
+            detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else {}
+            with store.connect() as c:
+                mapped = c.execute("SELECT status FROM umif_record_map WHERE batch_id=? AND source_record_id=?", (batch_id,record_id)).fetchone()
+                unknown = bool(mapped and mapped["status"] in ("submitting", "delivery_unknown"))
+                if unknown:
+                    c.execute("UPDATE umif_record_map SET status='delivery_unknown' WHERE batch_id=? AND source_record_id=?", (batch_id,record_id))
+                c.execute("UPDATE knowledge_delivery_jobs SET status=?,error_code=?,error_message=? WHERE batch_id=? AND record_id=? AND record_file=?", ("unknown" if unknown else "failed", detail.get("code", "DELIVERY_FAILED"), detail.get("message", "Delivery failed; inspect service logs."),batch_id,record_id,record_file))
+    task = asyncio.create_task(run())
+    request.app.state.knowledge_delivery_tasks.add(task)
+    task.add_done_callback(request.app.state.knowledge_delivery_tasks.discard)
+    return ApiEnvelope(request_id=uuid.uuid4().hex, data={"status": "queued"})
+
+
 async def _deliver_record(
     batch_id: str, record_id: str, body: DocumentDelivery, request: Request,
-    record_file: str,
+    record_file: str, *, background: bool = False,
 ) -> ApiEnvelope[dict[str, Any]]:
     """Submit once; reconcile unknown outcomes before another submission."""
     store = request.app.state.vault_store
@@ -464,6 +559,11 @@ async def _deliver_record(
         def claim() -> dict[str, Any]:
             with store.connect() as c:
                 c.execute("BEGIN IMMEDIATE")
+                if not background and c.execute(
+                    "SELECT 1 FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND record_file=? AND status IN ('queued','running','reconciling','unknown')",
+                    (batch_id, record_id, record_file),
+                ).fetchone():
+                    raise ImportWorkflowError("CLAUDE_DELIVERY_OUTCOME_UNKNOWN", "Background delivery is pending or unknown; check status before retrying.", status_code=409)
                 review = c.execute(
                     "SELECT decision FROM import_content_reviews WHERE batch_id=? AND source_record_id=?",
                     (batch_id, record_id),
@@ -564,7 +664,7 @@ async def _deliver_record(
         adapter = request.app.state.everos_adapter
         try:
             async with httpx.AsyncClient(
-                timeout=adapter.timeout_seconds, transport=adapter.transport
+                timeout=(float(os.environ.get("MEMO_VAULT_KNOWLEDGE_TIMEOUT_SECONDS", "7200")) if background else adapter.timeout_seconds), transport=adapter.transport
             ) as client:
                 response = await client.post(
                     f"{adapter.base_url}/api/v2/knowledge/documents",
@@ -639,8 +739,57 @@ async def reconcile_asset(
     return await _reconcile_record(batch_id, record_id, request, "assets.jsonl")
 
 
+@router.post("/{batch_id}/documents/{record_id}/reconcile/start", status_code=202)
+async def start_document_reconcile(batch_id: str, record_id: str, request: Request):
+    return await _start_reconcile(batch_id, record_id, request, "documents.jsonl")
+
+
+@router.post("/{batch_id}/assets/{record_id}/reconcile/start", status_code=202)
+async def start_asset_reconcile(batch_id: str, record_id: str, request: Request):
+    return await _start_reconcile(batch_id, record_id, request, "assets.jsonl")
+
+
+async def _start_reconcile(batch_id: str, record_id: str, request: Request, record_file: str):
+    store = request.app.state.vault_store
+    with store.connect() as c:
+        row = c.execute(
+            "SELECT m.target_type FROM umif_record_map m JOIN import_batches b ON b.id=m.batch_id WHERE m.batch_id=? AND m.source_record_id=? AND b.source_type IN ('claude','chatgpt')",
+            (batch_id, record_id),
+        ).fetchone()
+    expected_type = "document" if record_file == "documents.jsonl" else "asset"
+    if row is None or row["target_type"] != expected_type:
+        raise HTTPException(status_code=404, detail={"code": "CLAUDE_RECORD_NOT_FOUND", "message": "File not found."})
+    with store.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        job = c.execute("SELECT status FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id,record_id,record_file)).fetchone()
+        if job and job["status"] in ("queued", "running", "reconciling", "delivered"):
+            raise HTTPException(status_code=409, detail={"code": "DELIVERY_STILL_RUNNING", "message": "Delivery is active or already completed."})
+        mapped = c.execute("SELECT status FROM umif_record_map WHERE batch_id=? AND source_record_id=?", (batch_id,record_id)).fetchone()
+        if not mapped or mapped["status"] not in ("submitting", "delivery_unknown"):
+            raise HTTPException(status_code=409, detail={"code": "DELIVERY_NOT_UNKNOWN", "message": "No uncertain delivery to reconcile."})
+        c.execute("INSERT INTO knowledge_delivery_jobs (batch_id,record_id,record_file,status) VALUES (?,?,?,'reconciling') ON CONFLICT(batch_id,record_id,record_file) DO UPDATE SET status='reconciling',error_code=NULL,error_message=NULL", (batch_id,record_id,record_file))
+    async def run():
+        try:
+            result = await _reconcile_record(batch_id,record_id,request,record_file,background=True)
+            if result.data.get("status") != "delivered":
+                with store.connect() as c:
+                    c.execute("UPDATE knowledge_delivery_jobs SET status='unknown',error_code='DELIVERY_NOT_FOUND',error_message=? WHERE batch_id=? AND record_id=? AND record_file=?", (result.data.get("message", "No matching document found; delivery may still be running."),batch_id,record_id,record_file))
+        except asyncio.CancelledError:
+            with store.connect() as c:
+                c.execute("UPDATE knowledge_delivery_jobs SET status='unknown',error_code='RECONCILE_INTERRUPTED',error_message='Reconciliation interrupted; check again.' WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id,record_id,record_file))
+            raise
+        except Exception:
+            logger.exception("knowledge_reconciliation_failed batch_id=%s record_id=%s",batch_id,record_id)
+            with store.connect() as c:
+                c.execute("UPDATE knowledge_delivery_jobs SET status='unknown',error_code='RECONCILE_FAILED',error_message='Reconciliation failed; check again.' WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id,record_id,record_file))
+    task=asyncio.create_task(run())
+    request.app.state.knowledge_delivery_tasks.add(task)
+    task.add_done_callback(request.app.state.knowledge_delivery_tasks.discard)
+    return ApiEnvelope(request_id=uuid.uuid4().hex, data={"status":"reconciling"})
+
+
 async def _reconcile_record(
-    batch_id: str, record_id: str, request: Request, record_file: str,
+    batch_id: str, record_id: str, request: Request, record_file: str, *, background: bool = False,
 ) -> ApiEnvelope[dict[str, Any]]:
     """Find a previous upload by its content-addressed source filename and scope."""
     try:
@@ -657,6 +806,10 @@ async def _reconcile_record(
             raise ImportWorkflowError(
                 "CLAUDE_RECORD_NOT_FOUND", "Document not found.", status_code=404
             )
+        with request.app.state.vault_store.connect() as c:
+            job = c.execute("SELECT status FROM knowledge_delivery_jobs WHERE batch_id=? AND record_id=? AND record_file=?", (batch_id, record_id, record_file)).fetchone()
+            if job and (job["status"] in ("queued", "running") or (job["status"] == "reconciling" and not background)):
+                raise ImportWorkflowError("DELIVERY_STILL_RUNNING", "Delivery or reconciliation is still running; wait for its result.", status_code=409)
         source_name = (_document_upload(package, record) if record_file == "documents.jsonl"
                        else _asset_upload(package, record))[0]
         title = record.payload.get("title") or record.payload.get("filename") or "Attachment"
@@ -694,6 +847,7 @@ async def _reconcile_record(
                                     "WHERE batch_id=? AND source_record_id=?",
                                     (target_id, batch_id, record_id),
                                 )
+                                c.execute("UPDATE knowledge_delivery_jobs SET status='delivered',target_id=?,error_code=NULL,error_message=NULL WHERE batch_id=? AND record_id=? AND record_file=?", (target_id,batch_id,record_id,record_file))
                                 if record_file == "documents.jsonl":
                                     asset_id = record.payload.get("asset_id")
                                     linked = [r for r in package.optional_records.get("documents.jsonl", ())

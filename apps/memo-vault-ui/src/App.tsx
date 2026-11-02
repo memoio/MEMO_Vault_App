@@ -20,6 +20,7 @@ import {
   getLibraryMemory,
   getMemoryLibrarySummary,
   getHealth,
+  getImportStatus,
   getCandidates,
   getCandidateSource,
   getProjects,
@@ -491,6 +492,7 @@ export default function App() {
   const [source, setSource] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [previewProjectId, setPreviewProjectId] = useState<string | null>(null);
   const [batch, setBatch] = useState<ImportBatch | null>(null);
   const [extractState, setExtractState] = useState<ExtractState>("idle");
   const [extractResult, setExtractResult] = useState<ExtractionResult | null>(null);
@@ -840,6 +842,7 @@ export default function App() {
     setSource(null);
     setFile(null);
     setPreview(null);
+    setPreviewProjectId(null);
     setBatch(null);
     setExtractState("idle");
     setExtractResult(null);
@@ -851,9 +854,10 @@ export default function App() {
   }
 
   async function inspectFile(selected: File | undefined) {
-    if (!selected || busy) return;
+    if (!selected || busy || !projectId) return;
     setFile(selected);
     setPreview(null);
+    setPreviewProjectId(null);
     setError(null);
     setBusy(true);
     const controller = new AbortController();
@@ -861,6 +865,7 @@ export default function App() {
     try {
       const result = await previewImport(selected, source ?? "generic", projectId, controller.signal);
       setPreview(result);
+      setPreviewProjectId(projectId);
       setStep(2);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") {
@@ -877,6 +882,10 @@ export default function App() {
 
   async function saveArchive() {
     if (!preview || preview.duplicate_batch_id || busy) return;
+    if (previewProjectId !== projectId) {
+      setError("目标项目已变化，请重新生成解析预览后再确认入库。");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -885,6 +894,27 @@ export default function App() {
       setStep(3);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "归档失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openExistingBatch(batchId: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const existing = await getImportStatus(batchId);
+      if (preview) void cancelPreview(preview.preview_id).catch(() => undefined);
+      setPreview(null);
+      setPreviewProjectId(null);
+      setBatch(existing);
+      setExtractResult(existing.extraction_result);
+      setExtractState(existing.extraction_status === "extracted" ? "done" : existing.extraction_status === "failed" ? "failed" : "idle");
+      if (existing.extraction_status === "failed") setError(existing.error_message);
+      setStep(3);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法读取已有批次。");
     } finally {
       setBusy(false);
     }
@@ -902,7 +932,7 @@ export default function App() {
         newProjectDescription.trim(),
       );
       setProjects(await getProjects());
-      setProjectId(created.project_id);
+      if (!preview) setProjectId(created.project_id);
       setLibraryProjectId(created.project_id);
       setNewProjectName("");
       setNewProjectDescription("");
@@ -917,7 +947,7 @@ export default function App() {
   }
 
   function openProjectCreate() {
-    const parent = libraryProjectId !== "all" ? libraryProjectId : pageId === "imports" ? projectId : "personal";
+    const parent = pageId === "imports" ? projectId : libraryProjectId !== "all" ? libraryProjectId : "personal";
     setNewProjectParentId(parent || "personal");
     setProjectCreateError(null);
     setShowCreateProject(true);
@@ -960,14 +990,14 @@ export default function App() {
 
   async function withdrawSelectedMemory() {
     if (!libraryDetail || memoryActionBusy) return;
-    if (!window.confirm("撤销后会立即从 EverOS 检索中排除，并在记忆库中保留只读记录。继续吗？")) return;
+    if (!window.confirm("撤销后，记忆将从记忆库和检索中移除，并返回候选审核，可修改设置后重新确认。继续吗？")) return;
     setMemoryActionBusy(true);
     setMemoryActionError(null);
     try {
-      const detail = await withdrawLibraryMemory(libraryDetail.project_id, libraryDetail);
-      setLibraryDetail(detail);
-      setLibrarySelected(detail);
+      await withdrawLibraryMemory(libraryDetail.project_id, libraryDetail);
+      closeLibraryDetail();
       refreshLibrary();
+      await refreshCandidates();
     } catch (reason) {
       setMemoryActionError(reason instanceof Error ? reason.message : "撤销记忆失败。");
     } finally {
@@ -1113,10 +1143,10 @@ export default function App() {
                   <div className="library-detail-tags"><span className={`library-kind kind-${libraryDetail.kind}`}>{memoryKindLabel(libraryDetail.kind)}</span><span className={`library-validity ${libraryDetail.lifecycle_status}`}>{libraryDetail.lifecycle_status === "withdrawn" ? "已撤销" : libraryDetail.lifecycle_status === "deleted" ? "已删除" : libraryDetail.status === "valid" ? "有效" : "已过期"}</span></div>
                   {libraryDetail.lifecycle_note ? <p className="notice warning">{libraryDetail.lifecycle_note}</p> : null}
                   {libraryDetail.lifecycle_status !== "deleted" ? <><h2>记忆内容</h2><pre className="library-full-content">{libraryDetail.content}</pre></> : null}
-                  <h2>属性</h2><dl className="library-metadata"><dt>项目空间</dt><dd>{projects.find((item) => item.project_id === libraryDetail.project_id)?.full_path ?? projectName(libraryDetail.project_id)} · <code>{libraryDetail.namespace}</code></dd><dt>EverOS 类型</dt><dd>{libraryDetail.memory_type}</dd><dt>对外使用</dt><dd>{externalUseLabel(libraryDetail.external_use)}</dd><dt>生命周期</dt><dd>{libraryDetail.lifecycle_status === "active" ? "正式记忆" : libraryDetail.lifecycle_status === "withdrawn" ? "撤销后只读" : "删除标记"}</dd><dt>修订版本</dt><dd>{libraryDetail.revision}</dd><dt>证据标记</dt><dd>{libraryDetail.evidence_kind}</dd><dt>有效期</dt><dd>{libraryDetail.valid_until ? new Date(libraryDetail.valid_until).toLocaleString() : "长期有效"}</dd><dt>EverOS ID</dt><dd><code>{libraryDetail.everos_memory_id}</code></dd></dl>
+                  <h2>属性</h2><dl className="library-metadata"><dt>项目空间</dt><dd>{projects.find((item) => item.project_id === libraryDetail.project_id)?.full_path ?? projectName(libraryDetail.project_id)} · <code>{libraryDetail.namespace}</code></dd><dt>EverOS 类型</dt><dd>{libraryDetail.memory_type}</dd><dt>对外使用</dt><dd>{externalUseLabel(libraryDetail.external_use)}</dd><dt>生命周期</dt><dd>{libraryDetail.lifecycle_status === "active" ? "正式记忆" : libraryDetail.lifecycle_status === "withdrawn" ? "已撤销" : "删除标记"}</dd><dt>修订版本</dt><dd>{libraryDetail.revision}</dd><dt>证据标记</dt><dd>{libraryDetail.evidence_kind}</dd><dt>有效期</dt><dd>{libraryDetail.valid_until ? new Date(libraryDetail.valid_until).toLocaleString() : "长期有效"}</dd><dt>EverOS ID</dt><dd><code>{libraryDetail.everos_memory_id}</code></dd></dl>
                   {libraryDetail.lifecycle_status !== "deleted" ? <div className="library-evidence"><h2>来源证据</h2>{libraryDetail.source_segment ? <><div className="segment-status"><strong>{libraryDetail.source_segment.filename}</strong><span>{libraryDetail.source_segment.precision === "exact_input" ? "精确输入片段" : "关联消息（无精确字符范围）"} · {libraryDetail.source_segment.messages.length} 条消息</span><span className={libraryDetail.source_segment.archive_available ? "evidence-valid" : "evidence-invalid"}>{archiveStatusLabel(libraryDetail.source_segment.archive_status)}</span>{segmentStatusLabel(libraryDetail.source_segment.segment_status) ? <span className="evidence-invalid">{segmentStatusLabel(libraryDetail.source_segment.segment_status)}</span> : null}<span>{libraryDetail.source_segment.key_position_status === "located" ? "已定位关键原文" : "未定位关键句，可阅读完整片段"}</span></div>{libraryDetail.source_segment.key_position_status === "located" ? libraryDetail.source_segment.messages.filter((item) => item.key_position).map((item, index) => <article className="library-evidence-item" key={`${item.message_id}:${item.source_char_start}:${index}`}><div><strong>{item.role} · {formatTime(item.timestamp_ms)} · #{item.ordinal + 1}</strong></div><blockquote>{highlightSourceSpan(item.content, item.key_position)}</blockquote></article>) : null}<details className="library-segment-details"><summary>查看完整 MemCell 片段（{libraryDetail.source_segment.messages.length} 条消息）</summary>{libraryDetail.source_segment.messages.map((item, index) => <article className="library-evidence-item" key={`${item.message_id}:${item.source_char_start}:${index}`}><div><strong>{item.role} · {formatTime(item.timestamp_ms)} · #{item.ordinal + 1}</strong><code>{item.message_id}</code></div><pre>{highlightSourceSpan(item.content, item.key_position)}</pre></article>)}</details></> : libraryDetail.evidence.length ? libraryDetail.evidence.map((item) => <article className="library-evidence-item" key={`${item.message_id}:${item.filename}`}><div><strong>{item.filename}</strong><span>{item.role} · {formatTime(item.timestamp_ms)}</span></div>{item.quote && item.excerpt_matched ? <blockquote>{item.quote}</blockquote> : <small>原文件已归档，未定位到与此记忆匹配的短摘录。</small>}<small className={item.available ? "evidence-valid" : "evidence-invalid"}>{archiveStatusLabel(item.archive_status)}</small></article>) : <p className="subtle">没有可读取的来源证据。</p>}{!libraryDetail.evidence_available && libraryDetail.evidence.length ? <p className="notice warning">当前没有可用的原文件证据。</p> : null}</div> : null}
                   {memoryActionError ? <div className="notice error" role="alert">{memoryActionError}</div> : null}
-                  {libraryDetail.lifecycle_status === "active" ? <div className="memory-lifecycle-actions"><div className="actions"><button className="secondary-button" disabled={memoryActionBusy} onClick={() => { setMemoryDraftContent(libraryDetail.content); setMemoryDraftExternalUse(libraryDetail.external_use); setMemoryDraftNote(""); setMemoryActionError(null); setShowMemoryEditor(true); }}>修正</button><button className="secondary-button" disabled={memoryActionBusy} onClick={() => void withdrawSelectedMemory()}>撤销</button><button className="secondary-button danger-button" disabled={memoryActionBusy} onClick={() => void deleteSelectedMemory()}>删除</button></div><p>撤销：保留记录，可只读查看。删除：仅保留删除标记，正文不可再查看。两者都会立即从检索、Memory Pack、MCP 和训练导出中排除；已交出的内容无法收回。</p></div> : null}
+                  {libraryDetail.lifecycle_status === "active" ? <div className="memory-lifecycle-actions"><div className="actions"><button className="secondary-button" disabled={memoryActionBusy} onClick={() => { setMemoryDraftContent(libraryDetail.content); setMemoryDraftExternalUse(libraryDetail.external_use); setMemoryDraftNote(""); setMemoryActionError(null); setShowMemoryEditor(true); }}>修正</button><button className="secondary-button" disabled={memoryActionBusy} onClick={() => void withdrawSelectedMemory()}>撤销</button><button className="secondary-button danger-button" disabled={memoryActionBusy} onClick={() => void deleteSelectedMemory()}>删除</button></div><p>撤销：返回候选审核，可修改后重新确认。删除：仅保留删除标记，正文不可再查看。两者都会从检索和导出中排除；已交出的内容无法收回。</p></div> : null}
                   {showMemoryEditor ? <div className="memory-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowMemoryEditor(false); }}><section className="memory-editor-modal" role="dialog" aria-modal="true" aria-label="修正记忆"><h2>修正记忆</h2><label>记忆内容<textarea rows={8} value={memoryDraftContent} onChange={(event) => setMemoryDraftContent(event.target.value)} maxLength={4000} /></label><label>对外使用<select value={memoryDraftExternalUse} onChange={(event) => setMemoryDraftExternalUse(event.target.value as LibraryMemory["external_use"])}><option value="allow">允许外发</option><option value="ask">导出时确认</option><option value="deny">不可外发</option></select></label><label>修改说明（可选）<textarea rows={3} value={memoryDraftNote} onChange={(event) => setMemoryDraftNote(event.target.value)} maxLength={500} placeholder="记录本次修改的原因" /></label><div className="actions right"><button className="secondary-button" disabled={memoryActionBusy} onClick={() => setShowMemoryEditor(false)}>取消</button><button className="primary-button" disabled={memoryActionBusy || !memoryDraftContent.trim()} onClick={() => void saveMemoryCorrection()}>{memoryActionBusy ? "保存中…" : "保存修正"}</button></div></section></div> : null}
                 </div> : null}
               </aside>
@@ -1182,6 +1212,9 @@ export default function App() {
                         <label>有效期<select disabled={candidate.status !== "pending"} value={draft.validity_days ?? "long"} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, validity_days: event.target.value === "long" ? null : Number(event.target.value) as 30 | 90 } }))}><option value="long">长期</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label>
                         <label>对外使用<select disabled={candidate.status !== "pending"} value={draft.external_use} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, external_use: event.target.value as CandidateChanges["external_use"] } }))}><option value="ask">导出时确认</option><option value="allow">允许外发</option><option value="deny">不可外发</option></select></label>
                       </div>
+                      {typeof candidate.metadata?.part_index === "number" && typeof candidate.metadata?.part_count === "number" ? <div className="notice">同一情节的第 {candidate.metadata.part_index} / {candidate.metadata.part_count} 部分；各部分独立审核，共同关联原情节来源。</div> : null}
+                      {candidate.metadata?.output_language_not_chinese === true ? <div className="notice warning">候选标题或正文未检测到中文（专有名词等也可能触发）；请核对语义和原文后再确认。</div> : null}
+                      {candidate.metadata?.output_truncated === true ? <div className="notice warning">候选内容因长度限制被截断；请核对原文并编辑后再确认。</div> : null}
                       {candidate.status === "pending" ? <div className="candidate-actions"><button className="primary-button" disabled={candidateBusy !== null || !draft.content.trim() || !supportedKind || (!confirmable && draft.content.trim() === candidate.content.trim())} onClick={() => void reviewCandidate(candidate, "confirm")}>{candidateBusy === candidate.id ? "处理中…" : "确认入库"}</button><button className="secondary-button danger-button" disabled={candidateBusy !== null} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
                     </div>
                     <div className="source-links"><h3>来源证据</h3>{candidate.evidence.length ? candidate.evidence.map((item) => <div className="source-link" key={item.message_id}><span>{item.role} · {formatTime(item.timestamp_ms)} · {item.message_id.slice(0, 12)}</span><button className="secondary-button" onClick={() => void openSource(candidate.id, item.message_id, draft.content)}>打开原对话</button></div>) : <p className="subtle">{candidate.origin === "manual" ? "人工新增，没有原文件来源。" : "没有可定位的归档消息。"}</p>}</div>
@@ -1257,10 +1290,21 @@ export default function App() {
               </div>
             ) : null}
 
-            {source === "claude" && step > 0 ? <ClaudeImport projects={projects} initialProjectId={projectId} onBack={clearWorkflow} step={step} onStepChange={setStep} /> : null}
+            {source === "claude" && step > 0 ? <ClaudeImport projects={projects} projectId={projectId} onProjectChange={setProjectId} onCreateProject={openProjectCreate} onBack={clearWorkflow} step={step} onStepChange={setStep} /> : null}
             {step === 1 && source !== "claude" ? (
               <div className="import-card">
                 <h2>上传与检查</h2>
+                <div className="namespace-field">
+                  <label htmlFor="project-space">目标项目空间</label>
+                  <div className="project-picker">
+                    <select id="project-space" disabled={busy} value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+                      {!projectId ? <option value="">请选择项目空间</option> : null}
+                      {projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name} · {item.project_id}</option>)}
+                    </select>
+                    <button className="secondary-button" type="button" disabled={busy} onClick={openProjectCreate}>新建项目</button>
+                  </div>
+                  <small>预览将按所选项目检查重复内容。返回此页更改项目后，可使用已选文件继续。</small>
+                </div>
                 <p className="subtle">
                   {source === "chatgpt" ? "支持 ChatGPT 账户导出的原始 ZIP" : source === "deepseek_harness" ? "支持 DeepSeek 网页导出 ZIP、Harness v4 .jsonl 或 ZIP" : "支持 .json、.md、.txt 和 ZIP"}；单文件最大 {formatSize(health?.max_import_bytes ?? 100 * 1024 * 1024)}。
                   ZIP 解压后最多 {formatSize(health?.max_archive_unpacked_bytes ?? 50 * 1024 * 1024)}、
@@ -1269,6 +1313,7 @@ export default function App() {
                 <input
                   accept={source === "chatgpt" ? ".zip,application/zip" : source === "deepseek_harness" ? ".jsonl,.zip,application/jsonl,application/x-ndjson,application/zip" : ".json,.md,.txt,.zip,application/json,text/plain,text/markdown,application/zip"}
                   className="visually-hidden"
+                  disabled={busy || !projectId}
                   onChange={(event) => {
                     const selected = event.target.files?.[0];
                     event.target.value = "";
@@ -1287,7 +1332,7 @@ export default function App() {
                   <div className="upload-glyph">↑</div>
                   <strong>{busy ? "正在安全检查并解析…" : file ? file.name : "拖拽文件到这里"}</strong>
                   <span>{file ? `${formatSize(file.size)} · ${file.type || "未知 MIME，将由服务端校验"}` : "或从电脑中选择一个文件"}</span>
-                  <button className="secondary-button" disabled={busy} onClick={() => fileInput.current?.click()}>选择文件</button>
+                  <button className="secondary-button" disabled={busy || !projectId} onClick={() => fileInput.current?.click()}>选择文件</button>
                 </div>
                 <div className="process-stages">
                   {["上传文件", "安全与重复检查", "解析消息"].map((stage, index) => (
@@ -1300,7 +1345,7 @@ export default function App() {
                   <button className="secondary-button" disabled={busy} onClick={() => { setStep(0); setFile(null); setError(null); }}>上一步</button>
                   {busy ? <button className="secondary-button" onClick={() => abortController.current?.abort()}>取消处理</button> : null}
                   <span className="spacer" />
-                  {file && !busy ? <button className="secondary-button" onClick={() => { setFile(null); setError(null); }}>重新选择文件</button> : null}
+                  <button className="primary-button" disabled={!file || busy || !projectId} onClick={() => void inspectFile(file ?? undefined)}>下一步：生成预览</button>
                 </div>
               </div>
             ) : null}
@@ -1312,7 +1357,7 @@ export default function App() {
                   <span className={`state-tag ${preview.duplicate_batch_id || preview.source_event_conflict_count ? "warning" : "success"}`}>{preview.duplicate_batch_id ? "原文件已导入" : preview.source_event_conflict_count ? "来源事件冲突，不能归档" : "安全检查与解析通过"}</span>
                 </div>
                 {preview.duplicate_batch_id ? (
-                  <div className="notice warning">该文件已归档到批次 <code>{preview.duplicate_batch_id}</code>。本次没有新增归档。</div>
+                  <div className="notice warning">当前项目已有这份文件，批次 <code>{preview.duplicate_batch_id}</code>。可以打开已有批次继续处理。 <button type="button" className="secondary-button" disabled={busy} onClick={() => void openExistingBatch(preview.duplicate_batch_id!)}>查看已有批次</button></div>
                 ) : null}
                 <div className="stats-grid">
                   <div><strong>{preview.conversation_count}</strong><span>会话</span></div>
@@ -1379,28 +1424,11 @@ export default function App() {
                     </div>
                   </>
                 ) : null}
-                <div className="namespace-field">
-                  <label htmlFor="project-space">目标项目空间</label>
-                  <div className="project-picker">
-                    <select id="project-space" value={projectId} onChange={(event) => {
-                      if (preview && event.target.value !== projectId) {
-                        void cancelPreview(preview.preview_id).catch(() => undefined);
-                        setPreview(null);
-                        setStep(1);
-                      }
-                      setProjectId(event.target.value);
-                    }}>
-                      {projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name} · {item.project_id}</option>)}
-                    </select>
-                    <button className="secondary-button" type="button" onClick={openProjectCreate}>新建项目</button>
-                  </div>
-                  <small>此用户保险箱的 app_id：<code>{health?.app_id ?? "读取中"}</code>。项目之间的记忆互相隔离。</small>
-                  <small>会话中的 user 和 assistant 内容共同属于用户聊天记录，进入 <code>users/{health?.user_id ?? "…"}</code>；<code>agents/{health?.agent_id ?? "…"}</code> 仅用于后续接入的结构化工具调用经验。</small>
-                </div>
+                <p className="subtle">目标项目空间：{projectName(previewProjectId ?? projectId)} · <code>{previewProjectId ?? projectId}</code>。如需更换，请返回上传页面重新选择。</p>
                 <div className="actions">
-                  <button className="secondary-button" onClick={() => { void cancelPreview(preview.preview_id).catch(() => undefined); setPreview(null); setStep(1); setError(null); }}>上一步</button>
+                  <button className="secondary-button" disabled={busy} onClick={() => { void cancelPreview(preview.preview_id).catch(() => undefined); setPreview(null); setStep(1); setError(null); }}>上一步</button>
                   <span className="spacer" />
-                  <button className="primary-button" disabled={busy || Boolean(preview.duplicate_batch_id) || preview.source_event_conflict_count > 0 || !projectId} onClick={() => void saveArchive()}>{busy ? "正在归档…" : "确认入库"}</button>
+                  <button className="primary-button" disabled={busy || Boolean(preview.duplicate_batch_id) || preview.source_event_conflict_count > 0 || !projectId} onClick={() => void saveArchive()}>{busy ? "正在处理…" : "确认入库"}</button>
                 </div>
               </div>
             ) : null}
@@ -1413,8 +1441,8 @@ export default function App() {
                 <TrackInventory batchId={batch.batch_id} />
                 {source === "chatgpt" ? <ChatGPTReview batchId={batch.batch_id} /> : null}
                 <div className="extract-options">
-                  <button className="extract-option" disabled={busy} onClick={() => void runExtraction()}>
-                    <strong>{busy ? "正在请求本地 EverOS…" : "立即使用本地 EverOS 抽取"}</strong>
+                  <button className="extract-option" disabled={busy || extractState === "done"} onClick={() => void runExtraction()}>
+                    <strong>{extractState === "done" ? "此批次已抽取，请前往候选审核" : busy ? "正在请求本地 EverOS…" : "立即使用本地 EverOS 抽取"}</strong>
                     <span>只发送到本机配置的 EverOS 服务，不使用云端回退。</span>
                   </button>
                   <button className="extract-option quiet" disabled={busy} onClick={deferExtraction}>
@@ -1422,7 +1450,8 @@ export default function App() {
                     <span>完成本次导入。原文已保存。</span>
                   </button>
                 </div>
-                {extractState === "failed" ? <div className="notice error">抽取失败，原文仍已保存。{error}</div> : null}
+                {extractState === "running" ? <div className="notice">后台正在抽取，请勿重复提交；关闭页面不会取消任务。</div> : null}
+                {extractState === "failed" ? <div className="notice error">未能确认抽取结果，原文仍已保存；后台可能仍在运行。{error}</div> : null}
                 <div className="actions right">
                   {extractState === "failed" ? <button className="secondary-button" disabled={busy} onClick={() => void runExtraction()}>重试抽取</button> : null}
                   <button className="secondary-button" disabled={busy} onClick={deferExtraction}>稍后处理</button>

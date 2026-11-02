@@ -38,6 +38,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = VaultStore(settings.data_dir)
     store.initialize()
     app.state.vault_store = store
+    app.state.extraction_tasks = set()
+    app.state.knowledge_delivery_tasks = set()
+    app.state.knowledge_export_tasks = set()
+    app.state.knowledge_export_semaphore = asyncio.Semaphore(1)
+    app.state.extraction_semaphore = asyncio.Semaphore(1)
+    # This deployment uses a single Vault worker; interrupted work must be retried.
+    with store.connect() as connection:
+        connection.execute(
+            """UPDATE import_batches SET extraction_status = 'failed',
+               error_code = 'EXTRACTION_INTERRUPTED',
+               error_message = 'Vault restarted during extraction; retry when ready.'
+               WHERE extraction_status IN ('queued', 'running')"""
+        )
+    with store.connect() as connection:
+        connection.execute("UPDATE knowledge_export_jobs SET status='failed',error_message='Export interrupted; start again.' WHERE status IN ('queued','running')")
+        connection.execute("UPDATE umif_record_map SET status='delivery_unknown' WHERE status='submitting' AND EXISTS (SELECT 1 FROM knowledge_delivery_jobs j WHERE j.batch_id=umif_record_map.batch_id AND j.record_id=umif_record_map.source_record_id AND j.status='running')")
+        connection.execute("UPDATE knowledge_delivery_jobs SET status='failed', error_code='DELIVERY_INTERRUPTED', error_message='Delivery stopped before it started; retry.' WHERE status='queued'")
+        connection.execute("UPDATE knowledge_delivery_jobs SET status='unknown', error_code='DELIVERY_INTERRUPTED', error_message='Delivery outcome is unknown; reconcile before retry.' WHERE status IN ('running','reconciling')")
     app.state.everos_adapter = EverOSHttpAdapter(
         settings.everos_base_url, timeout_seconds=settings.everos_timeout_seconds
     )
@@ -58,6 +76,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        export_tasks = list(app.state.knowledge_export_tasks)
+        for task in export_tasks:
+            task.cancel()
+        if export_tasks:
+            await asyncio.gather(*export_tasks, return_exceptions=True)
+        delivery_tasks = list(app.state.knowledge_delivery_tasks)
+        for task in delivery_tasks:
+            task.cancel()
+        if delivery_tasks:
+            await asyncio.gather(*delivery_tasks, return_exceptions=True)
+        extraction_tasks = list(app.state.extraction_tasks)
+        for task in extraction_tasks:
+            task.cancel()
+        if extraction_tasks:
+            await asyncio.gather(*extraction_tasks, return_exceptions=True)
         # Wait for workers; cancelling to_thread cannot stop filesystem writes.
         tasks = list(app.state.import_job_tasks.values())
         if tasks:

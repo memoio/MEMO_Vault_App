@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from everos.entrypoints.memo_vault.adapter import (
     EverOSAdapterError,
     EverOSMemoryRecord,
+    EverOSMemoryRef,
 )
 from everos.entrypoints.memo_vault.library import MemoVaultLibraryService
 from everos.entrypoints.memo_vault.storage import VaultStore
@@ -45,6 +47,18 @@ class LifecycleUpdatingAdapter(LifecycleFailingAdapter):
             "revision": int(payload["expected_revision"]) + 1,
             "content": self.content,
         }
+
+
+class LifecycleWithdrawAdapter(LifecycleFailingAdapter):
+    async def apply_memory_lifecycle(self, **payload: object) -> dict[str, object]:
+        self.lifecycle_calls += 1
+        return {"memory_id": self.memory_id, "lifecycle_status": "withdrawn", "revision": int(payload["expected_revision"]) + 1, "content": self.content}
+
+    async def list_user_memories(self, **_: object) -> list[EverOSMemoryRecord]:
+        return []
+
+    async def publish_approved(self, **payload: object) -> EverOSMemoryRef:
+        return EverOSMemoryRef(memory_id="republished-memory", scope=str(payload["scope"]), content=str(payload["content"]), revision=1)
 
 
 def _seed_memory(store: VaultStore, *, content: str) -> tuple[str, str]:
@@ -118,6 +132,55 @@ def test_policy_only_correction_does_not_call_everos_lifecycle(tmp_path: Path) -
             "SELECT external_use FROM candidates WHERE id = ?", (memory_id,)
         ).fetchone()[0]
     assert memory_policy == candidate_policy == "allow"
+
+
+def test_withdraw_returns_memory_to_pending_review(tmp_path: Path) -> None:
+    store = VaultStore(tmp_path / "vault")
+    store.initialize()
+    memory_id, everos_memory_id = _seed_memory(store, content="Corrected memory.")
+    with store.connect() as connection:
+        connection.execute("INSERT INTO normalized_messages (id, batch_id, conversation_id, ordinal, role, content, timestamp_ms, content_sha256) VALUES ('source', 'test-batch-id', 'session', 0, 'user', 'original', 1000, 'hash')")
+        connection.execute("INSERT INTO candidate_evidence (candidate_id, message_id, char_start, char_end, quote, quote_sha256) VALUES (?, 'source', 0, 8, 'original', 'hash')", (memory_id,))
+    adapter = LifecycleWithdrawAdapter(memory_id=everos_memory_id, content="Corrected memory.")
+    service = MemoVaultLibraryService(store, adapter)
+    result = asyncio.run(service.apply_lifecycle(project_id="personal", memory_id=memory_id, action="withdraw", expected_revision=1))
+    assert result["lifecycle_status"] == "withdrawn"
+    with store.connect() as connection:
+        candidates = connection.execute("SELECT id, content, status, target_project_id FROM candidates WHERE status = 'pending'").fetchall()
+        assert len(candidates) == 1
+        assert candidates[0]["id"] != memory_id
+        assert candidates[0]["content"] == "Corrected memory."
+        assert candidates[0]["target_project_id"] == "personal"
+        assert connection.execute("SELECT message_id FROM candidate_evidence WHERE candidate_id = ?", (candidates[0]["id"],)).fetchone()[0] == "source"
+    visible = asyncio.run(service.list_memories(project_id="personal", status="all"))
+    assert visible["memories"] == []
+    asyncio.run(service.apply_lifecycle(project_id="personal", memory_id=memory_id, action="withdraw", expected_revision=1))
+    with store.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM candidates WHERE status='pending'").fetchone()[0] == 1
+
+
+def test_returned_candidate_can_be_confirmed_with_new_settings(tmp_path: Path) -> None:
+    from everos.entrypoints.memo_vault.contracts import ConfirmCandidateRequest
+    from everos.entrypoints.memo_vault.routes.candidates import confirm_candidate
+
+    store = VaultStore(tmp_path / "vault")
+    store.initialize()
+    memory_id, everos_memory_id = _seed_memory(store, content="Memory to review again.")
+    with store.connect() as connection:
+        connection.execute("UPDATE candidates SET origin='manual' WHERE id=?", (memory_id,))
+    adapter = LifecycleWithdrawAdapter(memory_id=everos_memory_id, content="Memory to review again.")
+    asyncio.run(MemoVaultLibraryService(store, adapter).apply_lifecycle(project_id="personal", memory_id=memory_id, action="withdraw", expected_revision=1))
+    with store.connect() as connection:
+        candidate_id = connection.execute("SELECT id FROM candidates WHERE status='pending'").fetchone()[0]
+    body = ConfirmCandidateRequest(revision=1, kind="episode", namespace="personal", external_use="allow", validity_days=90, evidence_kind="human_verified")
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault_store=store, everos_adapter=adapter)))
+    result = asyncio.run(confirm_candidate(candidate_id, body, request))
+    assert result.data["status"] == "confirmed"
+    with store.connect() as connection:
+        memory = connection.execute("SELECT lifecycle_status, external_use, valid_until FROM memories WHERE id=?", (candidate_id,)).fetchone()
+        assert memory["lifecycle_status"] == "active"
+        assert memory["external_use"] == "allow"
+        assert memory["valid_until"] is not None
 
 
 def test_content_correction_still_uses_everos_lifecycle(tmp_path: Path) -> None:

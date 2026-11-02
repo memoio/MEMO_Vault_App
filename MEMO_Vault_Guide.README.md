@@ -148,6 +148,18 @@ scp -P 15322 -r /root/EverOS/docs/memo_input/{deepseek,ChatGPT,Claude} \
 
 如果 WSL 用户无法读取 `/root/EverOS`，对 `scp` 使用 `sudo`。复制到服务器不会自动让本机浏览器的文件选择框看到这些文件；在本机浏览器上传时，仍需从本机选择文件。
 
+### 候选后台抽取
+
+候选抽取通过后台任务运行，页面定期查询状态；页面关闭不会主动取消任务。单个 Vault 进程同时运行一个候选抽取，其余批次排队；同一批次重复提交不会启动第二次。任务状态保存在 Vault 数据库中。Vault 重启会将未完成任务标为中断，需要确认 EverOS/Ollama 中旧请求已结束后手动重试；当前仅支持一个 Vault 工作进程，不支持多个进程共享同一数据目录。
+
+后台调用 EverOS 的读取超时默认 7200 秒，可用 `MEMO_VAULT_EXTRACTION_TIMEOUT_SECONDS` 配置；这不改变单次模型调用的超时，也不能保证大型任务完成。当前页面显示运行状态而非每个片段的百分比。超时或关闭网页不保证底层模型请求立即停止，重试前应检查日志和 Ollama 状态。
+
+### Knowledge 文档后台投递
+
+Claude 和 ChatGPT 项目文档投递在 Vault 后台运行，页面轮询状态；单进程内与候选抽取共用一个执行槽，其余任务排队。关闭页面不会主动取消任务。服务重启时，尚未开始的任务可重试；正在投递的任务会标记为结果未知，需要核对已有 Knowledge 文档，避免重复写入。核对暂未找到文档不证明远端任务已停止。当前只支持一个 Vault 工作进程共享数据目录。
+
+后台投递等待 EverOS 默认 7200 秒，可通过 `MEMO_VAULT_KNOWLEDGE_TIMEOUT_SECONDS` 设置。该值不改变 EverOS Knowledge 的总抽取预算 `EVEROS_KNOWLEDGE__EXTRACTION__TOTAL_TIMEOUT_SECONDS`、单次模型超时或 Ollama 的配置；长文仍可能在这些环节失败。Knowledge 创建完成后索引可能稍后可查。未知结果的核对也在后台执行。Knowledge 批量 ZIP 在后台准备，完成后下载；其等待 EverOS 超时默认为 7200 秒，可用 `MEMO_VAULT_KNOWLEDGE_EXPORT_TIMEOUT_SECONDS` 配置。已完成的临时导出在后续启动新 ZIP 导出时清理一天以前的记录和文件。
+
 ### 从导入到使用的共同流程
 
 1. 在“导入”选择来源和目标项目，上传文件；系统检查文件、解析来源、转换 UMIF 并提供预览。来源清单区分对话、Agent 轨迹、Knowledge、平台声明及仅保留的原文件内容。

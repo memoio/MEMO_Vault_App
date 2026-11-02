@@ -38,6 +38,22 @@ def node(parent, children, fragments):
     }
 
 
+def test_same_web_export_can_be_imported_into_another_project(tmp_path):
+    store = VaultStore(tmp_path)
+    store.initialize()
+    project = store.create_project(name="Other", parent_project_id="personal")["project_id"]
+    raw = archive({"u": node(None, [], [{"type": "REQUEST", "content": "hello"}])})
+    service = ImportService(store)
+    first = service.preview("web.zip", "deepseek_harness", raw, project_id="personal")
+    service.commit(first["preview_id"], "personal")
+    second = service.preview("web.zip", "deepseek_harness", raw, project_id=project)
+    assert second["duplicate_batch_id"] is None
+    assert second["duplicate_message_count"] == 0
+    batch = service.commit(second["preview_id"], project)
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM normalized_messages WHERE batch_id=? AND is_duplicate=0 AND memory_input=1", (batch["batch_id"],)).fetchone()[0] > 0
+
+
 def test_web_zip_preview_commit_routes_visible_fragments(tmp_path):
     store = VaultStore(tmp_path)
     store.initialize()

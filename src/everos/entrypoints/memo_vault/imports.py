@@ -739,13 +739,15 @@ class ImportService:
             else:
                 duplicate = connection.execute(
                     """SELECT id FROM import_batches
-                       WHERE file_sha256 = ? ORDER BY created_at LIMIT 1""",
-                    (raw_hash,),
+                       WHERE file_sha256 = ? AND project_id = ? AND source_type = ? ORDER BY created_at LIMIT 1""",
+                    (raw_hash, project_id, source_type),
                 ).fetchone()
             known_message_hashes = {
                 row[0]
                 for row in connection.execute(
-                    "SELECT DISTINCT content_sha256 FROM normalized_messages"
+                    "SELECT DISTINCT m.content_sha256 FROM normalized_messages m "
+                    "JOIN import_batches b ON b.id = m.batch_id WHERE b.project_id = ?",
+                    (project_id,),
                 ).fetchall()
             }
             known_message_ids: dict[str, list[tuple[str, str]]] = {}
@@ -1052,8 +1054,8 @@ class ImportService:
                     ).fetchone()
                 else:
                     duplicate = connection.execute(
-                        "SELECT id FROM import_batches WHERE file_sha256 = ? LIMIT 1",
-                        (data["raw_file_hash"],),
+                        "SELECT id FROM import_batches WHERE file_sha256 = ? AND project_id = ? AND source_type = ? LIMIT 1",
+                        (data["raw_file_hash"], project_id, data["source_type"]),
                     ).fetchone()
                 if duplicate:
                     raise ImportWorkflowError(
@@ -1110,7 +1112,9 @@ class ImportService:
                     known_message_hashes = {
                         row[0]
                         for row in connection.execute(
-                            "SELECT DISTINCT content_sha256 FROM normalized_messages"
+                            "SELECT DISTINCT m.content_sha256 FROM normalized_messages m "
+                            "JOIN import_batches b ON b.id = m.batch_id WHERE b.project_id = ?",
+                            (project_id,),
                         ).fetchall()
                     }
                     seen_message_hashes: set[str] = set()

@@ -107,7 +107,7 @@ class MemoVaultLibraryService:
         visible: list[dict[str, object]] = []
         missing: list[str] = []
         for row in registry:
-            if row["lifecycle_status"] == "deleted":
+            if row["lifecycle_status"] in {"deleted", "withdrawn"}:
                 continue
             expiry_status = _expiry_status(row["valid_until"], now)
             lifecycle = _lifecycle_status(row["lifecycle_status"])
@@ -312,7 +312,7 @@ class MemoVaultLibraryService:
             result["lifecycle_note"] = (
                 "此记忆已删除，正文与来源链接不可查看。"
                 if lifecycle == "deleted"
-                else "此记忆已撤销，保留只读记录。"
+                else "此记忆已从记忆库撤销。"
             )
             return result
         memory_type = _memory_type(row["memory_type"])
@@ -479,6 +479,25 @@ class MemoVaultLibraryService:
                     connection.execute(
                         "UPDATE memories SET external_use = ? WHERE id = ?",
                         (external_use or row["external_use"], memory_id),
+                    )
+                elif action == "withdraw":
+                    candidate_id = "return_" + hashlib.sha256(f"{memory_id}:{new_revision}".encode()).hexdigest()
+                    connection.execute(
+                        """INSERT INTO candidates
+                           (id, batch_id, everos_scope, kind, memory_type, metadata_json,
+                            source_segment_json, content, status, evidence_kind, external_use,
+                            origin, target_project_id, validity_days)
+                           SELECT ?, batch_id, everos_scope, kind, memory_type, metadata_json,
+                                  source_segment_json, content, 'pending', evidence_kind, external_use,
+                                  origin, ?, validity_days FROM candidates WHERE id = ?""",
+                        (candidate_id, project_id, memory_id),
+                    )
+                    connection.execute(
+                        """INSERT INTO candidate_evidence
+                           (candidate_id, message_id, char_start, char_end, quote, quote_sha256)
+                           SELECT ?, message_id, char_start, char_end, quote, quote_sha256
+                           FROM candidate_evidence WHERE candidate_id = ?""",
+                        (candidate_id, memory_id),
                     )
                 elif action == "delete":
                     connection.execute(

@@ -35,6 +35,23 @@ def _convert(raw: bytes):
                                   max_files=100, max_compression_ratio=200)
 
 
+def test_same_chatgpt_export_can_be_imported_into_another_project(tmp_path: Path) -> None:
+    store = VaultStore(tmp_path)
+    store.initialize()
+    project = store.create_project(name="Other", parent_project_id="personal")["project_id"]
+    message = {"id": "m1", "author": {"role": "user"}, "content": {"content_type": "text", "parts": ["hello"]}}
+    raw = _zip({"conversations.json": [{"conversation_id": "c", "current_node": "m1", "mapping": {"m1": {"parent": None, "message": message}}}]})
+    service = ImportService(store)
+    first = service.preview("export.zip", "chatgpt", raw, project_id="personal")
+    service.commit(first["preview_id"], "personal")
+    second = service.preview("export.zip", "chatgpt", raw, project_id=project)
+    assert second["duplicate_batch_id"] is None
+    assert second["duplicate_message_count"] == 0
+    batch = service.commit(second["preview_id"], project)
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM normalized_messages WHERE batch_id=? AND is_duplicate=0 AND memory_input=1", (batch["batch_id"],)).fetchone()[0] > 0
+
+
 def test_supplied_export_preserves_only_visible_messages_for_memory() -> None:
     package = _convert(SAMPLE.read_bytes())
     assert validate_package(package).valid

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
     raw_relpath TEXT NOT NULL DEFAULT '',
     archived_at TEXT,
     extraction_method TEXT,
+    extraction_result_json TEXT,
     app_id TEXT NOT NULL DEFAULT '',
     project_id TEXT NOT NULL DEFAULT 'personal',
     user_id TEXT NOT NULL DEFAULT '',
@@ -91,6 +92,25 @@ CREATE TABLE IF NOT EXISTS umif_record_map (
     error_code TEXT,
     last_error TEXT,
     PRIMARY KEY(batch_id, source_record_id)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_export_jobs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_delivery_jobs (
+    batch_id TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    record_file TEXT NOT NULL,
+    status TEXT NOT NULL,
+    target_id TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    PRIMARY KEY(batch_id, record_id, record_file)
 );
 
 CREATE TABLE IF NOT EXISTS import_content_reviews (
@@ -270,6 +290,7 @@ class VaultStore:
                 "raw_relpath": "TEXT NOT NULL DEFAULT ''",
                 "archived_at": "TEXT",
                 "extraction_method": "TEXT",
+                "extraction_result_json": "TEXT",
                 "app_id": "TEXT NOT NULL DEFAULT ''",
                 "project_id": "TEXT NOT NULL DEFAULT 'personal'",
                 "user_id": "TEXT NOT NULL DEFAULT ''",

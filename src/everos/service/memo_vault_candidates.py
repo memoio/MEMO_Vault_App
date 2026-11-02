@@ -20,12 +20,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
+from pydantic_core import from_json
 from openai import LengthFinishReasonError
 
 from everalgo._tokenize import count_tokens
 from everalgo.boundary import detect_boundaries
 from everalgo.llm import LLMError
-from everalgo.llm.types import ChatMessage as LLMChatMessage
+from everalgo.llm.types import ChatMessage as LLMChatMessage, ChatResponse
 from everalgo.prompts import render_prompt
 from everalgo.user_memory.prompts.en.profile import PROFILE_INITIAL_EXTRACTION_PROMPT
 from everalgo.user_memory.prompts.en.episode import EPISODE_GENERATION_PROMPT, DEFAULT_CUSTOM_INSTRUCTIONS
@@ -99,6 +100,7 @@ class _StructuredOutputClient:
     def __init__(self, inner: LLMClient, schema: type[BaseModel]) -> None:
         self._inner = inner
         self._schema = schema
+        self.output_truncated = False
 
     async def chat(
         self,
@@ -110,14 +112,39 @@ class _StructuredOutputClient:
         response_format: type[BaseModel] | None = None,
         **extra: Any,
     ) -> ChatResponse:
-        response = await self._inner.chat(
-            messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=min(max_tokens or _OUTPUT_TOKEN_BUDGET, _OUTPUT_TOKEN_BUDGET),
-            response_format=self._schema,
-            **extra,
-        )
+        self.output_truncated = False
+        try:
+            response = await self._inner.chat(
+                messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=min(max_tokens or _OUTPUT_TOKEN_BUDGET, _OUTPUT_TOKEN_BUDGET),
+                response_format=self._schema,
+                **extra,
+            )
+        except LLMError as exc:
+            cause = exc.__cause__
+            if self._schema is not _EpisodeOutput or not isinstance(cause, LengthFinishReasonError):
+                raise
+            try:
+                raw = cause.completion.choices[0].message.content
+                data = from_json(raw, allow_partial="trailing-strings") if raw else None
+                if not isinstance(data, dict) or not all(
+                    isinstance(data.get(key), str) and data[key].strip()
+                    for key in ("title", "content")
+                ):
+                    raise ValueError("Truncated episode lacks usable title or content")
+                parsed = _EpisodeOutput.model_validate(data)
+            except (IndexError, TypeError, ValueError, ValidationError):
+                raise exc
+            self.output_truncated = True
+            logger.warning("memo_vault_episode_truncated_output_recovered")
+            return ChatResponse(
+                content=_json_for_everalgo(parsed.model_dump_json()),
+                model=cause.completion.model,
+                finish_reason="length",
+                parsed=parsed,
+            )
         if response.parsed is None:
             raise ValueError("Structured response has no parsed JSON object.")
         return response.model_copy(
@@ -210,9 +237,8 @@ async def extract_chat_candidates(
         for cell in boundary.cells:
             source_pieces, cursor = _source_pieces_for_cell(cell, chunk, cursor)
             cells.append((cell, source_pieces))
-    episode_extractor = EpisodeExtractor(
-        llm=_StructuredOutputClient(llm_client, _EpisodeOutput)
-    )
+    episode_client = _StructuredOutputClient(llm_client, _EpisodeOutput)
+    episode_extractor = EpisodeExtractor(llm=episode_client)
     candidates: list[dict[str, object]] = []
     seen_preferences: list[str] = []
 
@@ -226,17 +252,31 @@ async def extract_chat_candidates(
             lambda: _extract_episode_checked(episode_extractor, cell),
             unit_index=cell_index,
         )
-        episode_content = episode.episode.strip()
-        if episode_content:
-            candidates.append({
-                "candidate_id": _candidate_id(batch_id, session_id, "episode", cell_index, episode_content),
-                "memory_type": "episode",
-                "kind": "episode",
-                "content": episode_content,
-                "source_message_ids": source_message_ids,
-                **({"source_segment": source_segment} if source_segment else {}),
-                "metadata": {"title": str(getattr(episode, "subject", "") or ""), "timestamp_ms": episode.timestamp},
-            })
+        episode_content = episode.episode
+        if episode_content.strip():
+            parts = _split_episode_content(episode_content)
+            group_id = _candidate_id(batch_id, session_id, "episode", cell_index, episode_content)
+            for part_index, part in enumerate(parts, 1):
+                candidate_id = group_id if len(parts) == 1 else _candidate_id(
+                    batch_id, session_id, f"episode_part_{part_index}", cell_index, episode_content
+                )
+                metadata = {
+                    "title": str(getattr(episode, "subject", "") or ""),
+                    "timestamp_ms": episode.timestamp,
+                    "output_truncated": episode_client.output_truncated,
+                    "output_language_not_chinese": not _contains_han(episode_content) or not _contains_han(str(getattr(episode, "subject", ""))),
+                }
+                if len(parts) > 1:
+                    metadata.update({"episode_group_id": group_id, "part_index": part_index, "part_count": len(parts)})
+                candidates.append({
+                    "candidate_id": candidate_id,
+                    "memory_type": "episode",
+                    "kind": "episode",
+                    "content": part,
+                    "source_message_ids": source_message_ids,
+                    **({"source_segment": source_segment} if source_segment else {}),
+                    "metadata": metadata,
+                })
         user_pieces = [piece for piece in source_pieces if piece.message.role == "user"]
         if not user_pieces:
             continue
@@ -258,12 +298,13 @@ async def extract_chat_candidates(
             for item in getattr(profile, section, []) or []:
                 if not isinstance(item, dict):
                     continue
-                content = str(item.get("description", "")).strip().replace(user_id, "用户")
+                raw_content = str(item.get("description", "")).strip()
+                content = raw_content.replace(user_id, "用户")
                 if not content or len(content) > 4000:
                     continue
                 evidence = item.get("evidence")
                 evidence_pieces = _pieces_matching_evidence(user_pieces, evidence) if isinstance(evidence, str) else []
-                if not evidence_pieces or not _contains_han(content) or _is_trivial_profile(content):
+                if not evidence_pieces or _is_trivial_profile(content):
                     continue
                 if any(profile_contents_duplicate(content, previous) for previous in seen_preferences):
                     continue
@@ -276,7 +317,7 @@ async def extract_chat_candidates(
                     "content": content,
                     "source_message_ids": list(dict.fromkeys(str(piece.message.id) for piece in evidence_pieces)),
                     "source_segment": _source_segment(evidence_pieces),
-                    "metadata": {"section": section, "item": item, "timestamp_ms": profile.timestamp},
+                    "metadata": {"section": section, "item": item, "timestamp_ms": profile.timestamp, "output_language_not_chinese": not _contains_han(raw_content)},
                 })
 
     return candidates
@@ -421,7 +462,13 @@ async def _retry_structured_output[T](
                 attempt=attempt,
                 max_attempts=_STRUCTURED_MAX_ATTEMPTS,
                 error_type=type(exc).__name__,
-                error_reason=exc.msg if isinstance(exc, json.JSONDecodeError) else None,
+                error_reason=(exc.msg if isinstance(exc, json.JSONDecodeError) else (
+                    str(exc) if str(exc) in {
+                        "Episode output must be Chinese",
+                        "Episode must summarize the event rather than copy an assistant response",
+                        "Structured response has no parsed JSON object.",
+                    } else "other_value_error"
+                )),
                 error_position=getattr(exc, "pos", None),
             )
             if attempt == _STRUCTURED_MAX_ATTEMPTS:
@@ -430,6 +477,36 @@ async def _retry_structured_output[T](
                     stage=stage,
                 ) from None
             await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
+
+
+def _split_episode_content(content: str) -> list[str]:
+    """Split losslessly, respecting both Python and browser UTF-16 limits."""
+    parts: list[str] = []
+    start = 0
+    while start < len(content):
+        end = start
+        units = 0
+        while end < len(content):
+            cost = 2 if ord(content[end]) > 0xFFFF else 1
+            if units + cost > 4000:
+                break
+            units += cost
+            end += 1
+        if end < len(content):
+            floor = start + (end - start) * 3 // 5
+            paragraph = content.rfind("\n", floor, end)
+            if paragraph >= floor:
+                end = paragraph + 1
+            else:
+                sentence = max(content.rfind(mark, floor, end) for mark in "。！？!?；;")
+                if sentence >= floor:
+                    end = sentence + 1
+        part = content[start:end]
+        if not part.strip():
+            raise ValueError("Episode cannot be split into non-empty candidates")
+        parts.append(part)
+        start = end
+    return parts
 
 
 def _split_message(message: ChatMessage) -> list[_MessagePiece]:
@@ -575,8 +652,10 @@ async def _extract_episode_checked(extractor: EpisodeExtractor, cell: MemCell):
         ),
     )
     content = episode.episode.strip()
+    if not content or not str(episode.subject).strip():
+        raise ValueError("Episode title and content must not be empty")
     if not _contains_han(content) or not _contains_han(str(episode.subject)):
-        raise ValueError("Episode output must be Chinese")
+        logger.warning("memo_vault_episode_non_chinese_output", content_has_han=_contains_han(content), title_has_han=_contains_han(str(episode.subject)))
     normalized = _normalized_text(content)
     if any(normalized == _normalized_text(str(item.content)) for item in cell.items if item.role == "assistant"):
         raise ValueError("Episode must summarize the event rather than copy an assistant response")

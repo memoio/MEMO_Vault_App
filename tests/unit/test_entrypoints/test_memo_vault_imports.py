@@ -799,6 +799,11 @@ async def test_duplicate_raw_file_is_reported_without_creating_second_batch(
         )
         first_batch_id = committed.json()["data"]["batch_id"]
     assert first_batch_id is not None
+    status = await vault_client.get(f"/api/v1/imports/{first_batch_id}/status")
+    assert status.status_code == 200
+    assert status.json()["data"]["batch_id"] == first_batch_id
+    assert status.json()["data"]["project_id"] == "personal"
+    assert status.json()["data"]["extraction_status"] == "not_started"
     with sqlite3.connect(tmp_path / "vault" / "vault.sqlite3") as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM import_batches").fetchone()[0] == 1
@@ -1565,6 +1570,34 @@ async def test_candidate_persistence_failure_keeps_umif_and_stage(
         assert (tmp_path / "vault" / status["umif_package_relpath"] / "manifest.json").is_file()
 
 
+def test_generic_duplicate_checks_are_scoped_to_project(tmp_path: Path) -> None:
+    from everos.entrypoints.memo_vault.imports import ImportService
+
+    store = VaultStore(tmp_path / "vault")
+    store.initialize()
+    project = store.create_project(name="Other project", parent_project_id="personal")
+    service = ImportService(store)
+    payload = b"## User\nThe same source in two projects."
+    first = service.preview("note.md", "generic", payload, project_id="personal")
+    concurrent = service.preview("note.md", "generic", payload, project_id="personal")
+    first_batch = service.commit(first["preview_id"], "personal")
+    with pytest.raises(ImportWorkflowError) as concurrent_error:
+        service.commit(concurrent["preview_id"], "personal")
+    assert concurrent_error.value.code == "IMPORT_DUPLICATE_FILE"
+    second = service.preview("note.md", "generic", payload, project_id=project["project_id"])
+    assert second["duplicate_batch_id"] is None
+    assert second["duplicate_message_count"] == 0
+    second_batch = service.commit(second["preview_id"], project["project_id"])
+    with store.connect() as connection:
+        rows = connection.execute("SELECT is_duplicate FROM normalized_messages WHERE batch_id = ?", (second_batch["batch_id"],)).fetchall()
+    assert rows and all(row[0] == 0 for row in rows)
+    duplicate = service.preview("note.md", "generic", payload, project_id="personal")
+    assert duplicate["duplicate_batch_id"] == first_batch["batch_id"]
+    with pytest.raises(ImportWorkflowError) as error:
+        service.commit(duplicate["preview_id"], "personal")
+    assert error.value.code == "IMPORT_DUPLICATE_FILE"
+
+
 def test_generic_umif_scope_matches_selected_project(tmp_path: Path) -> None:
     from everos.entrypoints.memo_vault.imports import ImportService
     from everos.umif.package import read_package
@@ -1602,3 +1635,195 @@ def test_generic_umif_ids_are_scoped_to_source_and_conversation() -> None:
     package = convert_parsed_markdown(parsed, "personal", source_identity="archive")
     assert validate_package(package).valid
     assert len({event.record_id for event in package.events}) == 2
+
+
+def test_background_extraction_returns_immediately_and_rejects_duplicates(tmp_path, monkeypatch):
+    import everos.entrypoints.memo_vault.routes.imports as import_routes
+
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def extract_import(self, **kwargs):
+            started.set()
+            await release.wait()
+            return {"status": "extracted", "method": "local", "candidates": [], "candidate_count": 0}
+
+    monkeypatch.setattr(import_routes, "EverOSHttpAdapter", SlowAdapter)
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post("/api/v1/imports/preview", files={"file": ("x.txt", b"hello", "text/plain")})
+            committed = await client.post("/api/v1/imports/commit", json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"})
+            batch = committed.json()["data"]["batch_id"]
+            response = await asyncio.wait_for(client.post(f"/api/v1/imports/{batch}/extract/start"), 2)
+            assert response.status_code == 202
+            await asyncio.wait_for(started.wait(), 2)
+            duplicate = await client.post(f"/api/v1/imports/{batch}/extract/start")
+            assert duplicate.status_code == 409
+            release.set()
+            for _ in range(100):
+                state = (await client.get(f"/api/v1/imports/{batch}/status")).json()["data"]
+                if state["extraction_status"] == "extracted":
+                    break
+                await asyncio.sleep(0.01)
+            assert state["extraction_status"] == "extracted"
+
+    asyncio.run(scenario())
+
+
+def test_background_extraction_is_marked_failed_after_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post(
+                "/api/v1/imports/preview",
+                files={"file": ("x.txt", b"hello", "text/plain")},
+            )
+            committed = await client.post(
+                "/api/v1/imports/commit",
+                json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"},
+            )
+            batch = committed.json()["data"]["batch_id"]
+            with app.state.vault_store.connect() as connection:
+                connection.execute(
+                    "UPDATE import_batches SET extraction_status = 'running' WHERE id = ?",
+                    (batch,),
+                )
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            state = (await client.get(f"/api/v1/imports/{batch}/status")).json()["data"]
+            assert state["extraction_status"] == "failed"
+            assert state["error_code"] == "EXTRACTION_INTERRUPTED"
+
+    asyncio.run(scenario())
+
+
+def test_background_extraction_reports_adapter_timeout(tmp_path, monkeypatch):
+    import everos.entrypoints.memo_vault.routes.imports as import_routes
+
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    observed = {}
+
+    class TimeoutAdapter:
+        def __init__(self, *args, **kwargs):
+            observed.update(kwargs)
+
+        async def extract_import(self, **kwargs):
+            raise EverOSAdapterError("model request timed out", stage="everos_health")
+
+    monkeypatch.setattr(import_routes, "EverOSHttpAdapter", TimeoutAdapter)
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post(
+                "/api/v1/imports/preview",
+                files={"file": ("x.txt", b"hello", "text/plain")},
+            )
+            committed = await client.post(
+                "/api/v1/imports/commit",
+                json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"},
+            )
+            batch = committed.json()["data"]["batch_id"]
+            assert (await client.post(f"/api/v1/imports/{batch}/extract/start")).status_code == 202
+            for _ in range(100):
+                state = (await client.get(f"/api/v1/imports/{batch}/status")).json()["data"]
+                if state["extraction_status"] == "failed":
+                    break
+                await asyncio.sleep(0.01)
+            assert state["error_message"] == "model request timed out"
+            assert observed["timeout_seconds"] == 7200.0
+
+    asyncio.run(scenario())
+
+
+def test_background_extraction_preserves_deferred_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post("/api/v1/imports/preview", files={"file": ("tool.json", b'{"messages":[{"role":"tool","content":"result"}]}', "application/json")})
+            committed = await client.post("/api/v1/imports/commit", json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"})
+            batch = committed.json()["data"]["batch_id"]
+            assert (await client.post(f"/api/v1/imports/{batch}/extract/start")).status_code == 202
+            for _ in range(100):
+                state = (await client.get(f"/api/v1/imports/{batch}/status")).json()["data"]
+                if state.get("extraction_result") is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert state["extraction_result"]["status"] == "deferred_tool_messages"
+            assert state["extraction_result"]["deferred_tool_message_count"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_background_unexpected_exception_is_recorded(tmp_path, monkeypatch):
+    import everos.entrypoints.memo_vault.routes.imports as import_routes
+
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    class BrokenAdapter:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("broken setup")
+    monkeypatch.setattr(import_routes, "EverOSHttpAdapter", BrokenAdapter)
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post("/api/v1/imports/preview", files={"file": ("x.txt", b"hello", "text/plain")})
+            committed = await client.post("/api/v1/imports/commit", json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"})
+            batch = committed.json()["data"]["batch_id"]
+            assert (await client.post(f"/api/v1/imports/{batch}/extract/start")).status_code == 202
+            for _ in range(100):
+                state = (await client.get(f"/api/v1/imports/{batch}/status")).json()["data"]
+                if state["extraction_status"] == "failed":
+                    break
+                await asyncio.sleep(0.01)
+            assert state["error_code"] == "EXTRACTION_FAILED"
+    asyncio.run(scenario())
+
+
+def test_split_episode_candidates_preserve_text_and_sources_in_vault(tmp_path, monkeypatch):
+    from everos.entrypoints.memo_vault.routes.imports import _persist_candidates
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+
+    async def scenario():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post("/api/v1/imports/preview", files={"file": ("note.txt", "用户讨论了项目计划".encode(), "text/plain")})
+            committed = await client.post("/api/v1/imports/commit", json={"preview_id": preview.json()["data"]["preview_id"], "project_id": "personal"})
+            batch_id = committed.json()["data"]["batch_id"]
+            store = app.state.vault_store
+            with store.connect() as connection:
+                batch = dict(connection.execute("SELECT * FROM import_batches WHERE id=?", (batch_id,)).fetchone())
+                message_id = connection.execute("SELECT id FROM normalized_messages WHERE batch_id=?", (batch_id,)).fetchone()[0]
+            parts = ["用户讨论项目。\n\n", "后续计划。"]
+            candidates = [{"candidate_id": f"split-{i}", "memory_type": "episode", "kind": "episode", "content": part, "source_message_ids": [message_id], "metadata": {"episode_group_id": "group", "part_index": i, "part_count": 2}} for i, part in enumerate(parts, 1)]
+            assert _persist_candidates(store, batch_id=batch_id, batch=batch, candidates=candidates) == 2
+            response = await client.get("/api/v1/candidates")
+            assert response.status_code == 200
+            rows = [row for row in response.json()["data"]["candidates"] if row["id"].startswith("split-")]
+            rows.sort(key=lambda row: row["metadata"]["part_index"])
+            assert "".join(row["content"] for row in rows) == "".join(parts)
+            assert all(row["status"] == "pending" and row["evidence"] for row in rows)
+            rejected = await client.post("/api/v1/candidates/split-1/reject", json={"revision": rows[0]["revision"]})
+            assert rejected.status_code == 200
+            with store.connect() as connection:
+                statuses = dict(connection.execute("SELECT id, status FROM candidates WHERE id IN ('split-1', 'split-2')").fetchall())
+            assert statuses == {"split-1": "rejected", "split-2": "pending"}
+    asyncio.run(scenario())

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useKnowledgeDeliveryPolling } from './useKnowledgeDeliveryPolling';
 import {
-  claudeRequest, commitImport, extractImport, type ClaudeContent, type ClaudeJob,
+  claudeRequest, commitImport, extractImport, getImportStatus, type ClaudeContent, type ClaudeJob,
   type ImportBatch, type ImportPreview, type ProjectSpace,
 } from './api';
 const activeStates = new Set(['queued', 'downloading', 'decoding', 'validating']);
@@ -36,26 +37,29 @@ function eventTime(value: number | null): string {
 function documentStatus(status: string): string {
   if (status === 'delivered') return '已进入 Knowledge';
   if (status === 'approved') return '已批准，待投递';
-  if (status === 'submitting') return '投递中';
+  if (status === 'delivery_queued') return '后台排队中';
+  if (status === 'delivery_reconciling') return '后台核对中';
+  if (status === 'delivery_running' || status === 'submitting') return '投递中';
   if (status === 'delivery_unknown') return '待核对投递结果';
   if (status === 'delivery_rejected') return '上次投递失败，可重试';
   return '保留在 Vault';
 }
 
-export default function ClaudeImport({ projects, initialProjectId, onBack, step, onStepChange }: {
-  projects: ProjectSpace[]; initialProjectId: string; onBack: () => void;
+export default function ClaudeImport({ projects, projectId: project, onProjectChange: setProject, onCreateProject, onBack, step, onStepChange }: {
+  projects: ProjectSpace[]; projectId: string; onProjectChange: (projectId: string) => void; onCreateProject: () => void; onBack: () => void;
   step: number; onStepChange: (step: number) => void;
 }) {
-  const [project, setProject] = useState(initialProjectId);
   const [jobs, setJobs] = useState<ClaudeJob[]>([]);
   const [job, setJob] = useState<ClaudeJob | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [batch, setBatch] = useState<Pick<ImportBatch, 'batch_id' | 'project_id'> | null>(null);
   const [content, setContent] = useState<ClaudeContent | null>(null);
+  const [extractionStatus, setExtractionStatus] = useState<string>('not_started');
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [documentText, setDocumentText] = useState<Record<string, { text: string; nextOffset: number; hasMore: boolean }>>({});
   const [merge, setMerge] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reviewingAssertionId, setReviewingAssertionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [mode, setMode] = useState<'local' | 'manifest'>('local');
@@ -66,6 +70,7 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
   const [showAllJobs, setShowAllJobs] = useState(false);
   const jobPath = job ? `import-jobs/${job.id}` : '';
   const batchPath = batch ? `imports/${batch.batch_id}` : '';
+  useKnowledgeDeliveryPolling(batch?.batch_id, content, setContent, setError);
 
   useEffect(() => { void claudeRequest<ClaudeJob[]>('import-jobs').then(setJobs).catch(e => setError(String(e))); }, []);
   useEffect(() => {
@@ -82,6 +87,7 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
     if (job?.status === 'committed' && job.batch_id) {
       setBatch({ batch_id: job.batch_id, project_id: job.project_id });
       void claudeRequest<ClaudeContent>(`imports/${job.batch_id}/claude-content`).then(setContent).catch(e => setError(String(e)));
+      void getImportStatus(job.batch_id).then(value => setExtractionStatus(value.extraction_status)).catch(e => setError(String(e)));
     }
   }, [job?.id, job?.status]);
   useEffect(() => {
@@ -114,6 +120,7 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
     setJob(await claudeRequest<ClaudeJob>(`${jobPath}/parts`, 'POST', form));
   }
   async function startImport() {
+    setExtractionStatus('not_started');
     const form = new FormData(); form.append('project_id', project);
     if (mode === 'local') {
       if (!localFiles.length) return;
@@ -149,9 +156,9 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
         <button type="button" aria-pressed={mode === 'local'} className={mode === 'local' ? 'selected' : ''} onClick={() => setMode('local')}><strong>上传多个 ZIP</strong><small>无需 Claude 下载链接</small></button>
         <button type="button" aria-pressed={mode === 'manifest'} className={mode === 'manifest' ? 'selected' : ''} onClick={() => setMode('manifest')}><strong>上传 Manifest</strong><small>由服务端按链接下载</small></button>
       </div>
-      <label className="claude-project-picker">目标项目<select disabled={busy} value={project} onChange={e => setProject(e.target.value)}>
-        {projects.map(p => <option key={p.project_id} value={p.project_id}>{p.name} · {p.project_id}</option>)}
-      </select><small>本次所有 ZIP 将进入同一个目标项目与导入批次。</small></label>
+      <div className="claude-project-picker"><label htmlFor="claude-project-space">目标项目空间</label><div className="project-picker"><select id="claude-project-space" disabled={busy} value={project} onChange={e => setProject(e.target.value)}>
+        {!project && <option value="">请选择项目空间</option>}{projects.map(p => <option key={p.project_id} value={p.project_id}>{p.name} · {p.project_id}</option>)}
+      </select><button type="button" className="secondary-button" disabled={busy} onClick={onCreateProject}>新建项目</button></div><small>本次所有 ZIP 将进入同一个目标项目与导入批次。</small></div>
       {mode === 'local' ? <>
         <div className={`claude-dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={e => { e.preventDefault(); setDragging(false); }} onDrop={e => { e.preventDefault(); setDragging(false); addLocalFiles(e.dataTransfer.files); }}>
           <span className="claude-upload-symbol" aria-hidden="true">↑</span><strong>拖入同一份导出的全部 ZIP</strong>
@@ -166,7 +173,7 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
       </> : <div className="claude-manifest-panel"><strong>上传 Claude Manifest JSON</strong><p>适用于下载链接仍可访问的情况。链接若失效，可在该任务中逐个补交原文件名的 ZIP。</p>
         <label className="secondary-button claude-file-button">{manifestFile ? manifestFile.name : '选择 Manifest JSON'}<input className="visually-hidden" type="file" accept=".json" disabled={busy} onChange={e => { setManifestFile(e.target.files?.[0] ?? null); e.target.value = ''; }} /></label>
       </div>}
-      <button className="primary-button claude-start-button" disabled={busy || (mode === 'local' ? localFiles.length === 0 : !manifestFile)} onClick={() => void action(startImport)}>{busy ? '正在上传…' : mode === 'local' ? `上传并检查 ${localFiles.length} 个 ZIP` : '上传并检查 Manifest'}</button>
+      <button className="primary-button claude-start-button" disabled={busy || !project || (mode === 'local' ? localFiles.length === 0 : !manifestFile)} onClick={() => void action(startImport)}>{busy ? '正在上传…' : mode === 'local' ? `上传并检查 ${localFiles.length} 个 ZIP` : '上传并检查 Manifest'}</button>
     </>}
     {job && step <= 2 && <>
       <div className="claude-section-heading"><h3>{jobTitle(job)}</h3><span className={`claude-job-state state-${job.status}`}>{stageNames[job.status] ?? job.status}</span></div>
@@ -198,7 +205,20 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
       {Object.entries(preview.skipped_event_counts).map(([kind, count]) => <p className="claude-helper" key={kind}>未转换：{kind} · {count}</p>)}
       <h3>消息预览 <span className="subtle">最多展示前 20 条</span></h3>
       <div className="table-wrap"><table><thead><tr><th>角色</th><th>时间</th><th>内容</th></tr></thead><tbody>{preview.messages.map(m => <tr key={`${m.conversation_id}:${m.ordinal}`}><td><span className="role-tag">{m.role}</span></td><td>{eventTime(m.timestamp_ms)}</td><td><textarea className="message-content" readOnly rows={4} value={m.content} aria-label={`${m.role} 消息内容`} /></td></tr>)}</tbody></table></div>
-      {preview.duplicate_batch_id && <p className="notice warning">这份 UMIF 包已归档至批次 {preview.duplicate_batch_id}。</p>}
+      <h3>工具调用预览 <span className="subtle">共 {preview.tool_call_count + preview.tool_result_count} 条，最多展示前 20 条；参数和结果已脱敏并截断</span></h3>
+      <p className="subtle">工具调用与结果独立归档，不进入用户记忆抽取，也不会自动生成 Case / Skill。</p>
+      {preview.tool_events.length ? <div className="table-wrap"><table><thead><tr><th>事件</th><th>工具 / 调用 ID</th><th>时间</th><th>参数或结果</th></tr></thead><tbody>{preview.tool_events.map(event => <tr key={event.source_event_id}>
+        <td>{event.event_type} · #{event.source_event_seq}</td>
+        <td>{event.tool_name ?? '结果'}<br /><code>{event.call_id ?? '无调用 ID'}</code>{event.is_error && <small className="duplicate-label">调用失败</small>}</td>
+        <td>{eventTime(event.timestamp_ms)}</td><td><pre className="trace-preview">{JSON.stringify(event.event_type === 'tool/call' ? event.arguments : (event.result_content ?? event.result_text), null, 2)}</pre></td>
+      </tr>)}</tbody></table></div> : <p className="subtle">本次解析没有工具调用。</p>}
+      {preview.duplicate_batch_id && <div className="notice warning">当前项目已有这份文件，批次 {preview.duplicate_batch_id}。 <button type="button" className="secondary-button" disabled={busy} onClick={() => void action(async () => {
+        const existing = await getImportStatus(preview.duplicate_batch_id!);
+        setBatch({ batch_id: existing.batch_id, project_id: existing.project_id });
+        setExtractionStatus(existing.extraction_status);
+        setContent(await claudeRequest<ClaudeContent>(`imports/${existing.batch_id}/claude-content`));
+        onStepChange(3);
+      })}>查看已有批次</button></div>}
       <button className="primary-button" disabled={busy || Boolean(preview.duplicate_batch_id) || preview.source_event_conflict_count > 0} onClick={() => void action(async () => {
         const saved = await commitImport(preview.preview_id, job!.project_id);
         setBatch(saved); setJob({ ...job!, status: 'committed', batch_id: saved.batch_id }); onStepChange(3); setContent(await claudeRequest<ClaudeContent>(`imports/${saved.batch_id}/claude-content`));
@@ -207,39 +227,38 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
     </>}
     {batch && step === 3 && <>
       <div className="notice success">原文已归档，关闭页面也不会丢失。候选记忆仍需人工审核。</div><p className="claude-job-meta">批次 {batch.batch_id} · 项目 {batch.project_id}</p>
-      <button className="primary-button" disabled={busy} onClick={() => void action(async () => {
+      <button className="primary-button" disabled={busy || extractionStatus === 'extracted'} onClick={() => void action(async () => {
         const result = await extractImport(batch.batch_id);
+        setExtractionStatus((await getImportStatus(batch.batch_id)).extraction_status);
         setNotice(`对话抽取状态：${result.status}。候选仍需人工审核后才能发布。`);
-      })}>抽取对话候选</button>
+      })}>{extractionStatus === 'extracted' ? '此批次已抽取，请前往候选审核' : '抽取对话候选'}</button>
       <h3>Claude 保存的记忆</h3><p className="claude-helper">这些是 Claude 平台摘要，需要作为来源声明单独审核。</p>
       {content?.assertions.map(r => <article className="claude-content-card" key={r.record_id}><textarea aria-label={`审核 Claude 记忆摘要 ${r.record_id}`} rows={5} value={edits[r.record_id] ?? r.text} onChange={e => setEdits({ ...edits, [r.record_id]: e.target.value })} />
         <small>审核文本需为 1–4000 字符；原始摘要仍会保留。</small>
-        <small>{r.status} · 来源项目：{r.source_project_id ?? '账号级'}</small>
-        <button disabled={busy || r.status === 'review_pending' || !(edits[r.record_id] ?? r.text).trim() || (edits[r.record_id] ?? r.text).length > 4000} onClick={() => void action(async () => {
-          await claudeRequest(`${batchPath}/assertions/${r.record_id}/review`, 'POST', JSON.stringify({ content: edits[r.record_id] ?? r.text })); await refreshContent();
-          setNotice('已加入候选审核队列。');
-        })}>加入候选审核</button></article>)}
-      <h3>工具轨迹 <span className="subtle">共 {content?.agent_event_count ?? 0} 条，最多展示前 20 条；参数和结果已脱敏并截断</span></h3>
-      <p className="subtle">工具调用与结果独立归档，不进入用户记忆抽取，也不会自动生成 Case / Skill。</p>
-      {content?.agent_events.length ? <div className="table-wrap"><table><thead><tr><th>事件</th><th>工具 / 调用 ID</th><th>时间</th><th>参数或结果</th></tr></thead><tbody>{content.agent_events.map(event => <tr key={event.record_id}>
-        <td>{event.record_type === 'event.tool_call' ? 'tool/call' : 'tool/result'} · #{event.sequence}</td>
-        <td>{event.tool_name ?? '结果'}<br /><code>{event.call_id ?? '无调用 ID'}</code>{event.is_error && <small className="duplicate-label">调用失败</small>}</td>
-        <td>{eventTime(event.timestamp_ms)}</td><td><pre className="trace-preview">{event.preview}</pre></td>
-      </tr>)}</tbody></table></div> : <p className="subtle">本批次没有工具轨迹。</p>}
+        <small>来源项目：{r.source_project_id ?? '账号级'}</small>
+        {r.status === 'review_pending' && <div className="notice success" role="status">已加入候选审核，请前往「候选审核」查看处理结果。</div>}
+        <button className="primary-button" disabled={busy || r.status === 'review_pending' || !(edits[r.record_id] ?? r.text).trim() || (edits[r.record_id] ?? r.text).length > 4000} onClick={() => void action(async () => {
+          setReviewingAssertionId(r.record_id);
+          try {
+            await claudeRequest(`${batchPath}/assertions/${r.record_id}/review`, 'POST', JSON.stringify({ content: edits[r.record_id] ?? r.text }));
+            setContent(current => current ? { ...current, assertions: current.assertions.map(item => item.record_id === r.record_id ? { ...item, status: 'review_pending' } : item) } : current);
+            await refreshContent();
+          } finally { setReviewingAssertionId(null); }
+        })}>{reviewingAssertionId === r.record_id ? '正在加入…' : r.status === 'review_pending' ? '已加入候选审核' : '加入候选审核'}</button></article>)}
       <h3>项目知识文档</h3>
       <p className="subtle">原文件已保留在 Vault。按需选择文档进入项目 Knowledge；未操作的文档继续保留在 Vault。</p>
       {content?.documents.map(r => <article className="claude-content-card" key={r.record_id}><strong>{r.title}</strong><p>{documentStatus(r.status)}</p>
         <details><summary>查看文档</summary><div className="claude-document-text">{(documentText[r.record_id]?.text ?? r.text) || '此文件没有可显示的纯文本，投递后由 Knowledge 解析器处理。'}</div>
           {(documentText[r.record_id]?.hasMore ?? r.text_truncated) && <button className="secondary-button" disabled={busy} onClick={() => void action(() => loadDocumentText(r.record_id, documentText[r.record_id]?.nextOffset ?? 4000))}>继续加载正文</button>}</details>
-        <button className="primary-button" disabled={busy || r.status === 'delivered'} onClick={() => void action(async () => {
+        <button className="primary-button" disabled={busy || ['delivered', 'delivery_queued', 'delivery_running', 'delivery_reconciling'].includes(r.status)} onClick={() => void action(async () => {
           try {
             if (['submitting', 'delivery_unknown'].includes(r.status)) {
-              const result = await claudeRequest<{ status: string; message?: string }>(`${batchPath}/documents/${r.record_id}/reconcile`, 'POST');
-              setNotice(result.message ?? result.status);
+              await claudeRequest(`${batchPath}/documents/${r.record_id}/reconcile/start`, 'POST');
+              setNotice('正在后台核对投递结果。');
             } else {
               await claudeRequest(`${batchPath}/documents/${r.record_id}/review`, 'POST', JSON.stringify({ decision: 'knowledge' }));
-              await claudeRequest(`${batchPath}/documents/${r.record_id}/deliver`, 'POST', JSON.stringify({ confirmed: true }));
-              setNotice('文档已投递到项目 Knowledge。');
+              await claudeRequest(`${batchPath}/documents/${r.record_id}/deliver/start`, 'POST', JSON.stringify({ confirmed: true }));
+              setNotice('Knowledge 投递已在后台启动，关闭页面不会取消任务。');
             }
           } finally { await refreshContent(); }
         })}>{r.status === 'delivered' ? '已进入 Knowledge' : ['submitting', 'delivery_unknown'].includes(r.status) ? '核对投递结果' : '批准进入 Knowledge'}</button>
@@ -259,7 +278,7 @@ export default function ClaudeImport({ projects, initialProjectId, onBack, step,
     {error && <p className="notice error" role="alert">{error}</p>}
     <div className="actions claude-footer"><button className="secondary-button" disabled={busy} onClick={(step === 3 && Boolean(batch)) || step === 1 ? onBack : () => onStepChange(step - 1)}>{(step === 3 && Boolean(batch)) || step === 1 ? '返回选择来源' : '上一步'}</button>
       {job && <button className="secondary-button" disabled={busy} onClick={() => {
-        setJob(null); setPreview(null); setBatch(null); setContent(null); setDocumentText({}); setMerge(false); onStepChange(1); void claudeRequest<ClaudeJob[]>('import-jobs').then(setJobs).catch(e => setError(String(e)));
+        setJob(null); setPreview(null); setBatch(null); setContent(null); setExtractionStatus('not_started'); setDocumentText({}); setMerge(false); onStepChange(1); void claudeRequest<ClaudeJob[]>('import-jobs').then(setJobs).catch(e => setError(String(e)));
       }}>开始新导入 / 查看其他任务</button>}</div>
   </div>;
 }

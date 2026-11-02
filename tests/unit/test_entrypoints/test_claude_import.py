@@ -66,6 +66,24 @@ def sample() -> bytes:
     )
 
 
+def test_same_claude_export_can_be_imported_into_another_project(tmp_path: Path) -> None:
+    from everos.entrypoints.memo_vault.imports import ImportService
+    from everos.entrypoints.memo_vault.storage import VaultStore
+
+    store = VaultStore(tmp_path / "vault")
+    store.initialize()
+    project = store.create_project(name="Other", parent_project_id="personal")["project_id"]
+    service = ImportService(store)
+    first = service.preview("export.zip", "claude", sample(), project_id="personal")
+    service.commit(first["preview_id"], "personal")
+    second = service.preview("export.zip", "claude", sample(), project_id=project)
+    assert second["duplicate_batch_id"] is None
+    assert second["duplicate_message_count"] == 0
+    batch = service.commit(second["preview_id"], project)
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM normalized_messages WHERE batch_id=? AND is_duplicate=0 AND memory_input=1", (batch["batch_id"],)).fetchone()[0] > 0
+
+
 def test_local_zip_bundle_is_one_archived_import(tmp_path: Path) -> None:
     """A downloaded multi-part export must remain one UMIF package and batch."""
     from everos.entrypoints.memo_vault.import_jobs import ImportJobManager
@@ -1481,3 +1499,164 @@ def test_project_only_archive_requires_export_owner_context(tmp_path: Path) -> N
     with pytest.raises(ImportWorkflowError) as error:
         convert_claude_export([path], "personal")
     assert error.value.code == "CLAUDE_ACCOUNT_REQUIRED"
+
+
+async def test_knowledge_background_delivery_returns_early_and_deduplicates(tmp_path, monkeypatch):
+    import asyncio
+    from everos.entrypoints.memo_vault.app import app
+
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+    async def remote(request):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return httpx.Response(201, json={"data": {"doc_id": "d_" + "a" * 12}})
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        manager = app.state.import_jobs
+        job = manager.create("export.zip", sample(), "personal")
+        manager.run(job["id"])
+        preview = manager.preview(job["id"])
+        batch = app.state.import_service.commit(preview["preview_id"], "personal")
+        path = f"/api/v1/imports/{batch['batch_id']}"
+        record = (await client.get(path + "/claude-content")).json()["data"]["documents"][0]
+        doc = path + "/documents/" + record["record_id"]
+        app.state.everos_adapter.transport = httpx.MockTransport(remote)
+        response = await asyncio.wait_for(client.post(doc + "/deliver/start", json={"confirmed": True}), 2)
+        assert response.status_code == 202
+        await asyncio.wait_for(started.wait(), 2)
+        duplicate = await client.post(doc + "/deliver/start", json={"confirmed": True})
+        assert duplicate.status_code == 409
+        assert (await client.get(doc + "/deliver/status")).json()["data"]["status"] == "submitting"
+        release.set()
+        for _ in range(100):
+            state = (await client.get(doc + "/deliver/status")).json()["data"]
+            if state["status"] == "delivered":
+                break
+            await asyncio.sleep(0.01)
+        assert state["status"] == "delivered"
+        assert state["target_id"] == "d_" + "a" * 12
+        assert calls == 1
+
+
+async def test_knowledge_background_timeout_is_unknown_and_blocks_retry(tmp_path, monkeypatch):
+    import asyncio
+    from everos.entrypoints.memo_vault.app import app
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        manager = app.state.import_jobs
+        job = manager.create("export.zip", sample(), "personal")
+        manager.run(job["id"])
+        preview = manager.preview(job["id"])
+        batch = app.state.import_service.commit(preview["preview_id"], "personal")
+        path = f"/api/v1/imports/{batch['batch_id']}"
+        record = (await client.get(path + "/claude-content")).json()["data"]["documents"][0]
+        doc = path + "/documents/" + record["record_id"]
+        def timeout(_):
+            raise httpx.ReadTimeout("unknown")
+        app.state.everos_adapter.transport = httpx.MockTransport(timeout)
+        assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 202
+        for _ in range(100):
+            state = (await client.get(doc + "/deliver/status")).json()["data"]
+            if state["status"] == "unknown": break
+            await asyncio.sleep(0.01)
+        assert state["status"] == "unknown"
+        assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 409
+        assert (await client.post(doc + "/deliver", json={"confirmed": True})).status_code == 409
+
+
+async def test_knowledge_background_restart_requires_reconcile(tmp_path, monkeypatch):
+    import asyncio
+    import re
+    from everos.entrypoints.memo_vault.app import app
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    started = asyncio.Event()
+    uploaded = {}
+    async def slow(request):
+        uploaded["filename"] = re.search(rb'filename="([^"]+)"', request.content).group(1).decode()
+        started.set()
+        await asyncio.Event().wait()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        manager = app.state.import_jobs
+        job = manager.create("export.zip", sample(), "personal")
+        manager.run(job["id"])
+        preview = manager.preview(job["id"])
+        batch = app.state.import_service.commit(preview["preview_id"], "personal")
+        path = f"/api/v1/imports/{batch['batch_id']}"
+        record = (await client.get(path + "/claude-content")).json()["data"]["documents"][0]
+        doc = path + "/documents/" + record["record_id"]
+        app.state.everos_adapter.transport = httpx.MockTransport(slow)
+        assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 202
+        await asyncio.wait_for(started.wait(), 2)
+        assert (await client.post(doc + "/reconcile")).status_code == 409
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        state = (await client.get(doc + "/deliver/status")).json()["data"]
+        assert state["status"] == "unknown"
+        assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 409
+        def remote(request):
+            if request.url.path.endswith('/documents'):
+                return httpx.Response(200, json={"data": {"documents": [{"doc_id": "d_" + "c" * 12, "title": record["title"]}], "total": 1}})
+            return httpx.Response(200, json={"data": {"source_name": uploaded["filename"]}})
+        app.state.everos_adapter.transport = httpx.MockTransport(remote)
+        assert (await client.post(doc + "/reconcile")).json()["data"]["status"] == "delivered"
+        state = (await client.get(doc + "/deliver/status")).json()["data"]
+        assert state["status"] == "delivered"
+        assert state["target_id"] == "d_" + "c" * 12
+
+
+async def test_queued_knowledge_delivery_locks_review_and_sync_delivery(tmp_path, monkeypatch):
+    import asyncio
+    from everos.entrypoints.memo_vault.app import app
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        manager = app.state.import_jobs
+        job = manager.create("export.zip", sample(), "personal")
+        manager.run(job["id"])
+        preview = manager.preview(job["id"])
+        batch = app.state.import_service.commit(preview["preview_id"], "personal")
+        path = f"/api/v1/imports/{batch['batch_id']}"
+        record = (await client.get(path + "/claude-content")).json()["data"]["documents"][0]
+        doc = path + "/documents/" + record["record_id"]
+        async with app.state.extraction_semaphore:
+            assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 202
+            assert (await client.post(doc + "/review", json={"decision": "exclude"})).status_code == 409
+            assert (await client.post(doc + "/deliver", json={"confirmed": True})).status_code == 409
+            content = (await client.get(path + "/claude-content")).json()["data"]
+            assert next(r for r in content["documents"] if r["record_id"] == record["record_id"])["status"] == "delivery_queued"
+
+
+async def test_knowledge_reconciliation_can_run_in_background(tmp_path, monkeypatch):
+    import asyncio
+    from everos.entrypoints.memo_vault.app import app
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        manager = app.state.import_jobs
+        job = manager.create("export.zip", sample(), "personal")
+        manager.run(job["id"])
+        preview = manager.preview(job["id"])
+        batch = app.state.import_service.commit(preview["preview_id"], "personal")
+        path = f"/api/v1/imports/{batch['batch_id']}"
+        record = (await client.get(path + "/claude-content")).json()["data"]["documents"][0]
+        doc = path + "/documents/" + record["record_id"]
+        with app.state.vault_store.connect() as c:
+            c.execute("UPDATE umif_record_map SET status='delivery_unknown' WHERE batch_id=? AND source_record_id=?", (batch['batch_id'],record['record_id']))
+        async def remote(request):
+            entered.set()
+            await release.wait()
+            return httpx.Response(200, json={"data": {"documents": [], "total": 0}})
+        app.state.everos_adapter.transport = httpx.MockTransport(remote)
+        assert (await asyncio.wait_for(client.post(doc + "/reconcile/start"), 2)).status_code == 202
+        await asyncio.wait_for(entered.wait(), 2)
+        assert (await client.get(doc + "/deliver/status")).json()["data"]["status"] == "reconciling"
+        assert (await client.post(doc + "/deliver/start", json={"confirmed": True})).status_code == 409
+        release.set()
+        for _ in range(100):
+            state = (await client.get(doc + "/deliver/status")).json()["data"]
+            if state["status"] == "unknown": break
+            await asyncio.sleep(0.01)
+        assert state["status"] == "unknown"
+        assert state["error_code"] == "DELIVERY_NOT_FOUND"

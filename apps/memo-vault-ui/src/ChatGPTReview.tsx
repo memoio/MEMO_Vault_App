@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useKnowledgeDeliveryPolling } from "./useKnowledgeDeliveryPolling";
 import { claudeRequest, type ClaudeContent } from "./api";
 
 export default function ChatGPTReview({ batchId }: { batchId: string }) {
@@ -6,6 +7,7 @@ export default function ChatGPTReview({ batchId }: { batchId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  useKnowledgeDeliveryPolling(batchId, content, setContent, setError);
 
   useEffect(() => {
     let active = true;
@@ -20,10 +22,10 @@ export default function ChatGPTReview({ batchId }: { batchId: string }) {
     setError(null);
     try {
       if (status === "submitting" || status === "delivery_unknown") {
-        await claudeRequest(`imports/${batchId}/documents/${recordId}/reconcile`, "POST");
+        await claudeRequest(`imports/${batchId}/documents/${recordId}/reconcile/start`, "POST");
       } else {
         await claudeRequest(`imports/${batchId}/documents/${recordId}/review`, "POST", JSON.stringify({ decision: "knowledge" }));
-        await claudeRequest(`imports/${batchId}/documents/${recordId}/deliver`, "POST", JSON.stringify({ confirmed: true }));
+        await claudeRequest(`imports/${batchId}/documents/${recordId}/deliver/start`, "POST", JSON.stringify({ confirmed: true }));
       }
       setContent(await claudeRequest<ClaudeContent>(`imports/${batchId}/claude-content`));
       setNotice("Knowledge 投递状态已更新。");
@@ -44,9 +46,9 @@ export default function ChatGPTReview({ batchId }: { batchId: string }) {
     {content?.documents.length ? <><p className="subtle">原文件已保留在 Vault。仅批准的文档会进入项目 Knowledge。</p>
       {content.documents.map(record => <article className="claude-content-card" key={record.record_id}>
         <strong>{record.title ?? "未命名文档"}</strong>
-        <p>{record.status === "delivered" ? "已进入 Knowledge" : "保留在 Vault"}</p>
+        <p>{record.status === "delivered" ? "已进入 Knowledge" : record.status === "delivery_queued" ? "后台排队中" : record.status === "delivery_running" ? "投递中" : record.status === "delivery_reconciling" ? "后台核对中" : record.status === "delivery_unknown" ? "待核对投递结果" : "保留在 Vault"}</p>
         <details><summary>查看文档</summary><div className="claude-document-text">{record.text || "此文件没有可显示的纯文本。"}</div></details>
-        <button className="primary-button" disabled={busyId !== null || record.status === "delivered"} onClick={() => void approve(record.record_id, record.status)}>{record.status === "delivered" ? "已进入 Knowledge" : record.status === "submitting" || record.status === "delivery_unknown" ? "核对投递结果" : busyId === record.record_id ? "处理中…" : "批准进入 Knowledge"}</button>
+        <button className="primary-button" disabled={busyId !== null || ["delivered", "delivery_queued", "delivery_running", "delivery_reconciling"].includes(record.status)} onClick={() => void approve(record.record_id, record.status)}>{record.status === "delivered" ? "已进入 Knowledge" : record.status === "submitting" || record.status === "delivery_unknown" ? "核对投递结果" : busyId === record.record_id ? "处理中…" : "批准进入 Knowledge"}</button>
       </article>)}
     </> : <p className="subtle">本次导出没有可投递的项目附件或文档。</p>}
     {notice ? <p className="notice success" role="status">{notice}</p> : null}
