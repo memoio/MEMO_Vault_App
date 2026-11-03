@@ -14,6 +14,8 @@ import hashlib
 import json
 import unicodedata
 import re
+import os
+from functools import lru_cache
 from difflib import SequenceMatcher
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -92,6 +94,42 @@ class _MessagePiece:
     message: ChatMessage
     char_start: int
     char_end: int
+
+
+class CandidateContextBudgetError(ValueError):
+    """The complete request cannot safely fit the configured model context."""
+
+
+@lru_cache(maxsize=1)
+def _qwen_token_counter() -> Callable[[str], int]:
+    """Load Qwen's tokenizer from the local cache without downloading at runtime."""
+    from huggingface_hub import hf_hub_download
+    from tokenizers import Tokenizer
+
+    path = os.environ.get("MEMO_VAULT_QWEN_TOKENIZER_PATH") or hf_hub_download(
+        "Qwen/Qwen2.5-3B-Instruct", "tokenizer.json", local_files_only=True
+    )
+    tokenizer = Tokenizer.from_file(path)
+    return lambda text: len(tokenizer.encode(text, add_special_tokens=False).ids)
+
+
+class _ContextGuardClient:
+    """Keep the full rendered prompt and output reserve inside one context."""
+
+    def __init__(self, inner: LLMClient, *, token_counter: Callable[[str], int], context_tokens: int, model: str | None = None) -> None:
+        self._inner, self._count, self._context = inner, token_counter, context_tokens
+        self._model = model
+
+    async def chat(self, messages: list[LLMChatMessage], *, max_tokens: int | None = None, **kwargs: Any) -> ChatResponse:
+        output_tokens = min(max_tokens or _OUTPUT_TOKEN_BUDGET, _OUTPUT_TOKEN_BUDGET)
+        prompt_tokens = sum(self._count(str(message.content)) for message in messages)
+        if prompt_tokens + output_tokens + 256 > self._context:
+            logger.warning("memo_vault_candidate_context_overflow", prompt_tokens=prompt_tokens, output_tokens=output_tokens, context_tokens=self._context)
+            raise CandidateContextBudgetError("Candidate input exceeds the configured model context")
+        logger.info("memo_vault_candidate_context_budget", prompt_tokens=prompt_tokens, output_tokens=output_tokens, context_tokens=self._context)
+        if self._model:
+            kwargs["model"] = self._model
+        return await self._inner.chat(messages, max_tokens=output_tokens, **kwargs)
 
 
 class _StructuredOutputClient:
@@ -191,6 +229,8 @@ async def extract_chat_candidates(
     prompt_loader: PromptLoader,
     hard_token_limit: int,
     hard_msg_limit: int,
+    qwen_context_tokens: int = 0,
+    qwen_model: str | None = None,
 ) -> list[dict[str, object]]:
     """Extract Episode and Profile drafts without persisting them.
 
@@ -213,8 +253,31 @@ async def extract_chat_candidates(
     if not chat_messages:
         return []
 
+    token_counter = count_tokens
+    chunk_budget = _CHUNK_TOKEN_BUDGET
+    message_budget = _MESSAGE_TOKEN_BUDGET
+    configured_context = qwen_context_tokens
+    if configured_context:
+        context_tokens = int(configured_context)
+        if not 4096 <= context_tokens <= 32768:
+            raise ValueError("memo_vault_candidates.qwen_context_tokens must be between 4096 and 32768")
+        token_counter = _qwen_token_counter()
+        from everalgo.boundary.chat import BATCH_BOUNDARY_DETECT_PROMPT_EN
+        boundary_prompt = prompt_loader.load("boundary_detection") or BATCH_BOUNDARY_DETECT_PROMPT_EN
+        fixed_prompt_tokens = max(
+            token_counter(boundary_prompt),
+            token_counter(native_prompt_in_chinese(EPISODE_GENERATION_PROMPT) + DEFAULT_CUSTOM_INSTRUCTIONS),
+            token_counter(native_prompt_in_chinese(PROFILE_INITIAL_EXTRACTION_PROMPT) + PROFILE_QUALITY_RULES_ZH),
+        )
+        chunk_budget = min(3000, context_tokens - _OUTPUT_TOKEN_BUDGET - fixed_prompt_tokens - 1024)
+        if chunk_budget < 256:
+            raise CandidateContextBudgetError("Configured context is too small for candidate prompts")
+        message_budget = min(2400, chunk_budget - 48)
+        llm_client = _ContextGuardClient(llm_client, token_counter=token_counter, context_tokens=context_tokens, model=qwen_model)
+        logger.info("memo_vault_candidate_qwen_budget", context_tokens=context_tokens, chunk_tokens=chunk_budget, message_tokens=message_budget, fixed_prompt_tokens=fixed_prompt_tokens)
+
     cells: list[tuple[MemCell, list[_MessagePiece]]] = []
-    chunks = _chunk_messages(chat_messages)
+    chunks = _chunk_messages(chat_messages, token_counter=token_counter, chunk_token_budget=chunk_budget, message_token_budget=message_budget)
     logger.info(
         "memo_vault_candidate_input_chunked",
         message_count=len(chat_messages),
@@ -228,7 +291,7 @@ async def extract_chat_candidates(
                 llm=_StructuredOutputClient(llm_client, _BoundaryOutput),
                 is_final=True,
                 prompt=prompt_loader.load("boundary_detection"),
-                hard_token_limit=min(hard_token_limit, _CHUNK_TOKEN_BUDGET),
+                hard_token_limit=min(hard_token_limit, chunk_budget),
                 hard_msg_limit=min(hard_msg_limit, _CHUNK_MESSAGE_LIMIT),
             ),
             unit_index=chunk_index,
@@ -291,6 +354,8 @@ async def extract_chat_candidates(
                 unit_index=cell_index,
             )
         except (CandidateExtractionFormatError, LLMError) as exc:
+            if isinstance(exc, CandidateExtractionFormatError) and exc.reason == "input_context":
+                raise
             logger.warning("memo_vault_profile_extraction_skipped", unit_index=cell_index,
                            error_type=type(exc).__name__, error_code=_safe_error_code(exc))
             continue
@@ -313,7 +378,7 @@ async def extract_chat_candidates(
                 candidates.append({
                     "candidate_id": _candidate_id(batch_id, session_id, "profile", cell_index, content),
                     "memory_type": "profile",
-                    "kind": "preference",
+                    "kind": "profile",
                     "content": content,
                     "source_message_ids": list(dict.fromkeys(str(piece.message.id) for piece in evidence_pieces)),
                     "source_segment": _source_segment(evidence_pieces),
@@ -454,6 +519,8 @@ async def _retry_structured_output[T](
                     reason="output_truncated",
                 ) from None
             await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
+        except CandidateContextBudgetError:
+            raise CandidateExtractionFormatError("Candidate input exceeds the configured model context.", stage=stage, reason="input_context") from None
         except (json.JSONDecodeError, ValueError, ValidationError) as exc:
             logger.warning(
                 "memo_vault_candidate_invalid_json",
@@ -509,16 +576,16 @@ def _split_episode_content(content: str) -> list[str]:
     return parts
 
 
-def _split_message(message: ChatMessage) -> list[_MessagePiece]:
+def _split_message(message: ChatMessage, *, token_counter: Callable[[str], int] = count_tokens, message_token_budget: int = _MESSAGE_TOKEN_BUDGET) -> list[_MessagePiece]:
     """Split long text exactly, keeping the archive message ID on every piece."""
     content = message.content
-    if not isinstance(content, str) or count_tokens(content) <= _MESSAGE_TOKEN_BUDGET:
+    if not isinstance(content, str) or token_counter(content) <= message_token_budget:
         return [_MessagePiece(message, 0, len(str(content)))]
     pieces: list[_MessagePiece] = []
     remaining = content
     char_start = 0
     while remaining:
-        if count_tokens(remaining) <= _MESSAGE_TOKEN_BUDGET:
+        if token_counter(remaining) <= message_token_budget:
             pieces.append(
                 _MessagePiece(
                     message.model_copy(update={"content": remaining}),
@@ -530,7 +597,7 @@ def _split_message(message: ChatMessage) -> list[_MessagePiece]:
         low, high, cut = 1, len(remaining), 1
         while low <= high:
             middle = (low + high) // 2
-            if count_tokens(remaining[:middle]) <= _MESSAGE_TOKEN_BUDGET:
+            if token_counter(remaining[:middle]) <= message_token_budget:
                 cut = middle
                 low = middle + 1
             else:
@@ -551,20 +618,20 @@ def _split_message(message: ChatMessage) -> list[_MessagePiece]:
     return pieces
 
 
-def _message_tokens(message: ChatMessage) -> int:
+def _message_tokens(message: ChatMessage, token_counter: Callable[[str], int] = count_tokens) -> int:
     """Allow room for role, timestamp and the extractor's message rendering."""
-    return count_tokens(str(message.content)) + 48
+    return token_counter(str(message.content)) + 48
 
 
-def _chunk_messages(messages: list[ChatMessage]) -> list[list[_MessagePiece]]:
+def _chunk_messages(messages: list[ChatMessage], *, token_counter: Callable[[str], int] = count_tokens, chunk_token_budget: int = _CHUNK_TOKEN_BUDGET, message_token_budget: int = _MESSAGE_TOKEN_BUDGET) -> list[list[_MessagePiece]]:
     chunks: list[list[_MessagePiece]] = []
     current: list[_MessagePiece] = []
     token_count = 0
     for message in messages:
-        for piece in _split_message(message):
-            cost = _message_tokens(piece.message)
+        for piece in _split_message(message, token_counter=token_counter, message_token_budget=message_token_budget):
+            cost = _message_tokens(piece.message, token_counter)
             if current and (
-                token_count + cost > _CHUNK_TOKEN_BUDGET
+                token_count + cost > chunk_token_budget
                 or len(current) >= _CHUNK_MESSAGE_LIMIT
             ):
                 chunks.append(current)

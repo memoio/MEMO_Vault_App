@@ -377,3 +377,60 @@ async def test_owner_creation_retry_cannot_duplicate_or_reveal_credential(runtim
         assert repeated.status_code == 409
         assert len(owner.state.gateway_repository.list_grants()) == 1
         assert first.json()["data"]["token"] not in repeated.text
+
+
+@pytest.mark.asyncio
+async def test_preference_memory_can_be_used_in_fixed_pack_and_context(runtime):
+    owner, external, _ = runtime
+    owner.include_router(
+        __import__(
+            "everos.entrypoints.memo_vault.routes.exports", fromlist=["router"]
+        ).router,
+        prefix="/api/v1",
+    )
+    with owner.state.vault_store.connect() as connection:
+        connection.execute("UPDATE memories SET kind='preference' WHERE id='visible'")
+    token = owner.state.owner_security.bootstrap_path.read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=owner),
+        base_url="http://vault.test",
+        headers={"Authorization": "Bearer " + token},
+    ) as c:
+        config = {
+            "namespaces": ["personal"],
+            "kinds": ["profile"],
+            "format": "markdown",
+            "evidence_mode": "none",
+            "token_budget": 4000,
+            "memory_ids": ["visible"],
+        }
+        preview = (await c.post("/api/v1/packs/preview", json=config)).json()["data"]
+        body = config | {
+            "preview_sha256": preview["preview_sha256"],
+            "preview_generated_at": preview["generated_at"],
+            "confirmed_ask_ids": [],
+            "confirm_unrecoverable_transfer": True,
+            "delivery_action": "copy",
+        }
+        draft = await c.post("/api/v1/grants/pack-drafts", json=body)
+        assert draft.status_code == 200, draft.text
+    from everos.service.memo_vault_export_contracts import GrantCreate
+
+    repo = owner.state.gateway_repository
+    grant = repo.create_grant(
+        GrantCreate(
+            subject="context-test", purpose="test", project_ids=["personal"]
+        ).model_dump(mode="json")
+    )
+    repo.set_paused(False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=external),
+        base_url="http://127.0.0.1",
+        headers={"Authorization": "Bearer " + grant["token"]},
+    ) as c:
+        response = await c.post(
+            "/api/v1/external/context/build",
+            json={"project_ids": ["personal"], "query": "Python", "format": "markdown"},
+        )
+        assert response.status_code == 200, response.text
+        assert "Uses Python" in response.text

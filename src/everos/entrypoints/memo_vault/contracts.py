@@ -54,7 +54,7 @@ class ConfirmCandidateRequest(BaseModel):
 
 
 class ManualCandidateRequest(BaseModel):
-    kind: Literal["episode", "preference"]
+    kind: Literal["episode", "preference", "profile"]
     namespace: str = Field(min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=4000)
     external_use: Literal["allow", "ask", "deny"] = "ask"

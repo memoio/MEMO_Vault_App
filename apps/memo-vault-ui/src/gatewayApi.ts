@@ -19,6 +19,8 @@ export interface GatewayGrantPage { items: Grant[]; total: number; limit: number
 export interface AuditRow { id: string; operation: string; transport: string; created_at: string; outcome: string; reason: string | null; metadata_json?: string; }
 async function request<T>(path: string, method = 'GET', body?: unknown, requestKey?: string): Promise<T> {
   const response = await ownerFetch(`/api/v1${path}`, { method, headers: { 'Content-Type': 'application/json', ...(requestKey ? { 'Idempotency-Key': requestKey } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('json')) throw new Error(`Vault API 返回了非 JSON 响应（HTTP ${response.status}），请检查服务日志或代理。`);
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : result.detail?.message ?? `HTTP ${response.status}`);
   return result.data as T;

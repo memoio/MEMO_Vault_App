@@ -10,6 +10,40 @@ import everos.service.memo_vault_candidates as extraction
 from everalgo.types import MemCell
 
 
+def test_configurable_chunk_budget_preserves_exact_source_spans():
+    from everalgo.types import ChatMessage
+    text = "abcdefghij" * 500
+    message = ChatMessage(id="m", role="user", sender_id="u", sender_name="u", content=text, timestamp=1000)
+    chunks = extraction._chunk_messages([message], token_counter=len, chunk_token_budget=3000, message_token_budget=2400)
+    pieces = [piece for chunk in chunks for piece in chunk]
+    assert len(pieces) == 3
+    assert "".join(piece.message.content for piece in pieces) == text
+    assert [(piece.char_start, piece.char_end) for piece in pieces] == [(0, 2400), (2400, 4800), (4800, 5000)]
+
+
+def test_context_guard_rejects_oversized_prompt_before_call():
+    from everalgo.llm.types import ChatMessage
+    class Client:
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("oversized request must not reach model")
+    client = extraction._ContextGuardClient(Client(), token_counter=len, context_tokens=2300)
+    with pytest.raises(extraction.CandidateContextBudgetError):
+        asyncio.run(client.chat([ChatMessage(role="user", content="x" * 200)], max_tokens=2048))
+
+
+def test_context_guard_reserves_output_for_unlimited_profile_call():
+    from everalgo.llm.types import ChatMessage
+    seen = {}
+    class Client:
+        async def chat(self, messages, **kwargs):
+            seen.update(kwargs)
+            return "ok"
+    client = extraction._ContextGuardClient(Client(), token_counter=len, context_tokens=8192, model="qwen2.5:3b-memo-8k")
+    assert asyncio.run(client.chat([ChatMessage(role="user", content="abc")])) == "ok"
+    assert seen["max_tokens"] == 2048
+    assert seen["model"] == "qwen2.5:3b-memo-8k"
+
+
 def test_candidate_extraction_keeps_chat_under_user_and_returns_source_links(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -27,29 +61,18 @@ def test_candidate_extraction_keeps_chat_under_user_and_returns_source_links(
             pass
 
         async def aextract(
-            self, cell, *, sender_id
+            self, cell, *, sender_id, prompt, custom_instructions
         ):  # type: ignore[no-untyped-def]
             seen["episode_sender_id"] = sender_id
             return SimpleNamespace(
                 episode="用户要求简洁回答。", subject="回答风格", timestamp=1234
             )
 
-    class AtomicFactExtractor:
-        def __init__(self, *, llm):  # type: ignore[no-untyped-def]
-            pass
-
-        async def aextract_from_text(
-            self, text, *, timestamp, prompt
-        ):  # type: ignore[no-untyped-def]
-            seen["fact_input"] = text
-            seen["fact_prompt"] = prompt
-            return [SimpleNamespace(content="用户偏好简洁回答。")]
-
     class ProfileExtractor:
         def __init__(self, *, llm):  # type: ignore[no-untyped-def]
             pass
 
-        async def aextract(self, memcells, *, sender_id, old_profile):  # type: ignore[no-untyped-def]
+        async def aextract(self, memcells, *, sender_id, prompt):  # type: ignore[no-untyped-def]
             seen["profile_messages"] = [item for cell in memcells for item in cell.items]
             seen["profile_sender_id"] = sender_id
             return SimpleNamespace(
@@ -60,7 +83,6 @@ def test_candidate_extraction_keeps_chat_under_user_and_returns_source_links(
 
     monkeypatch.setattr(extraction, "detect_boundaries", detect)
     monkeypatch.setattr(extraction, "EpisodeExtractor", EpisodeExtractor)
-    monkeypatch.setattr(extraction, "AtomicFactExtractor", AtomicFactExtractor)
     monkeypatch.setattr(extraction, "ProfileExtractor", ProfileExtractor)
 
     candidates = asyncio.run(extraction.extract_chat_candidates(
@@ -91,18 +113,18 @@ def test_candidate_extraction_keeps_chat_under_user_and_returns_source_links(
     assert [message.role for message in messages] == ["user", "assistant"]
     assert {message.sender_id for message in messages} == {"user-1"}
     assert seen["episode_sender_id"] is None
-    assert [item.role for item in seen["profile_messages"]] == ["user", "assistant"]
+    assert [item.role for item in seen["profile_messages"]] == ["user"]
     assert seen["profile_sender_id"] == "user-1"
     assert [(item["memory_type"], item["kind"], item["content"]) for item in candidates] == [
         ("episode", "episode", "用户要求简洁回答。"),
-        ("atomic_fact", "preference", "用户偏好简洁回答。"),
+        ("profile", "profile", "用户偏好简洁回答。"),
     ]
     assert candidates[0]["source_message_ids"] == ["message-user", "message-assistant"]
-    assert candidates[1]["source_message_ids"] == ["message-user", "message-assistant"]
-    assert candidates[1]["metadata"]["category"] == "偏好"
+    assert candidates[1]["source_message_ids"] == ["message-user"]
+    assert candidates[1]["metadata"]["item"]["category"] == "偏好"
 
 
-def test_candidate_extraction_retries_malformed_atomic_fact_json(
+def test_candidate_extraction_retries_malformed_profile_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
@@ -116,30 +138,22 @@ def test_candidate_extraction_retries_malformed_atomic_fact_json(
         def __init__(self, *, llm):  # type: ignore[no-untyped-def]
             pass
 
-        async def aextract(self, cell, *, sender_id):  # type: ignore[no-untyped-def]
+        async def aextract(self, cell, *, sender_id, prompt, custom_instructions):  # type: ignore[no-untyped-def]
             return SimpleNamespace(episode="用户希望回答简洁。", subject="回答风格", timestamp=1234)
-
-    class AtomicFactExtractor:
-        def __init__(self, *, llm):  # type: ignore[no-untyped-def]
-            pass
-
-        async def aextract_from_text(self, text, *, timestamp, prompt):  # type: ignore[no-untyped-def]
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise json.JSONDecodeError("Unterminated string", '{"atomic_facts":', 16)
-            return [SimpleNamespace(content="用户希望回答简洁。")]
 
     class ProfileExtractor:
         def __init__(self, *, llm):  # type: ignore[no-untyped-def]
             pass
 
-        async def aextract(self, memcells, *, sender_id, old_profile):  # type: ignore[no-untyped-def]
+        async def aextract(self, memcells, *, sender_id, prompt):  # type: ignore[no-untyped-def]
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise json.JSONDecodeError("Unterminated string", '{"explicit_info":', 17)
             return SimpleNamespace(explicit_info=[], implicit_traits=[], timestamp=1234)
 
     monkeypatch.setattr(extraction, "detect_boundaries", detect)
     monkeypatch.setattr(extraction, "EpisodeExtractor", EpisodeExtractor)
-    monkeypatch.setattr(extraction, "AtomicFactExtractor", AtomicFactExtractor)
     monkeypatch.setattr(extraction, "ProfileExtractor", ProfileExtractor)
 
     candidates = asyncio.run(extraction.extract_chat_candidates(
@@ -158,7 +172,7 @@ def test_candidate_extraction_retries_malformed_atomic_fact_json(
         hard_msg_limit=50,
     ))
 
-    assert attempts == 0
+    assert attempts == 2
     assert [(candidate["memory_type"], candidate["content"]) for candidate in candidates] == [
         ("episode", "用户希望回答简洁。"),
     ]

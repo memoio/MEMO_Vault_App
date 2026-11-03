@@ -1330,6 +1330,11 @@ def test_candidate_review_lists_evidence_and_publishes_approved_content(
                     ("candidate-review-1",),
                 ).fetchone()
                 assert memory == ("personal", "import", metadata[2], "ask")
+                for table in ("candidates", "memories"):
+                    assert connection.execute(
+                        f"SELECT kind FROM {table} WHERE id = ?",
+                        ("candidate-review-1",),
+                    ).fetchone()[0] == "profile"
 
     asyncio.run(scenario())
 

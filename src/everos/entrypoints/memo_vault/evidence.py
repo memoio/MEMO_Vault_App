@@ -239,7 +239,7 @@ def load_source_segment(
     ).fetchone()
     if candidate is None:
         return None
-    if candidate["kind"] == "preference":
+    if candidate["kind"] in {"preference", "profile"}:
         try:
             metadata = json.loads(candidate["metadata_json"] or "{}")
         except (TypeError, ValueError):

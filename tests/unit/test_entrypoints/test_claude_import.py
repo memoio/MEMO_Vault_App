@@ -962,7 +962,7 @@ async def test_assertion_edit_and_resume_committed_job(
         candidates = (await client.get("/api/v1/candidates")).json()["data"][
             "candidates"
         ]
-        assert candidates[0]["kind"] == "preference"
+        assert candidates[0]["kind"] == "profile"
         assert candidates[0]["metadata"]["origin_kind"] == "platform_summary"
         assert candidates[0]["content"] == "A reviewed summary."
 

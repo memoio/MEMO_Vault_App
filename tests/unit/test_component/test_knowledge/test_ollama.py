@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 import httpx
 import pytest
@@ -13,6 +14,35 @@ from everos.component.knowledge.ollama_client import (
     OllamaKnowledgeClient,
 )
 from everos.component.knowledge.ollama_extractor import OllamaKnowledgeExtractor
+from everos.config.settings import KnowledgeExtractionSettings
+
+
+def test_knowledge_default_allows_long_background_extraction():
+    settings = KnowledgeExtractionSettings()
+    assert settings.total_timeout_seconds == 7200
+
+
+@pytest.mark.asyncio
+async def test_knowledge_distinguishes_total_deadline_from_ollama_timeout():
+    async def slow(request):
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json={"models": []})
+
+    extractor = OllamaKnowledgeExtractor(
+        base_url="http://ollama", model="qwen", total_timeout=0.01,
+        transport=httpx.MockTransport(slow),
+    )
+    with pytest.raises(IncompleteExtractionError, match="total deadline"):
+        await extractor.aextract(ParsedContent(text="text"))
+
+    def timeout(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    extractor = OllamaKnowledgeExtractor(
+        base_url="http://ollama", model="qwen", transport=httpx.MockTransport(timeout),
+    )
+    with pytest.raises(IncompleteExtractionError, match="Ollama request timed out"):
+        await extractor.aextract(ParsedContent(text="text"))
 
 
 @pytest.mark.asyncio

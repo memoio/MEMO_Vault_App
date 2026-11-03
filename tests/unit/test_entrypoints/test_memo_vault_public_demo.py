@@ -6,7 +6,7 @@ from everos.entrypoints.memo_vault.auth import OwnerSecurity, install_owner_secu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("setting,enabled", [(None, True), ("1", True), ("0", False)])
+@pytest.mark.parametrize("setting,enabled", [(None, False), ("1", True), ("0", False)])
 async def test_optional_public_demo_keeps_origin_and_csrf_checks(
     tmp_path, monkeypatch, setting, enabled
 ):

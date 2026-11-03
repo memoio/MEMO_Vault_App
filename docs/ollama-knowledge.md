@@ -11,8 +11,16 @@ In the EverOS core data-root `everos.toml`:
 ```toml
 [knowledge.extraction]
 backend = "ollama"
-total_timeout_seconds = 540
+total_timeout_seconds = 7200
 ```
+
+The whole-document default is 7200 seconds. Vault's background Knowledge
+delivery defaults to an HTTP read timeout of 7800 seconds, allowing time for
+the extraction result to be stored and returned. On a slow CPU, consider
+increasing `[llm].timeout_seconds` (for example, to 600 seconds); that setting
+also affects other LLM operations. Existing TOML or environment overrides take
+precedence over these defaults. The total deadline does not guarantee success
+or cover every stage outside extraction.
 
 The existing `[llm]` model, API key and request timeout are reused. The native
 base URL is derived by removing `/v1` from the configured LLM API root. For a

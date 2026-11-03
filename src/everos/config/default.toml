@@ -167,6 +167,13 @@ max_length = 512
 hard_token_limit = 65536
 hard_msg_limit = 500
 
+[memo_vault_candidates]
+# Disabled by default. When using the Qwen2.5 3B Ollama 8192-context model,
+# set this to 8192 after installing the local Qwen tokenizer and verifying
+# the actual runtime context. This only affects Vault candidate extraction.
+qwen_context_tokens = 0
+# Optional dedicated Ollama model name; leave unset to use [llm].model.
+
 [memorize]
 # Conversation mode. Selects the boundary detector and which pipelines run:
 #   "chat"  -> BoundaryDetector       + user_memory only
@@ -188,7 +195,7 @@ max_upload_bytes = 52_428_800  # 50 MiB
 # Use "ollama" with ollama_base_url for other ports or reverse proxies.
 # Runtime context is read from /api/ps for each extraction; never fixed here.
 backend = "auto"
-total_timeout_seconds = 600.0
+total_timeout_seconds = 7200.0
 
 [knowledge.search]
 recall_n = 200

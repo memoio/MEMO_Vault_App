@@ -126,6 +126,8 @@ async def extract_candidates(
             prompt_loader=PromptLoader(Path(__file__).resolve().parents[3] / "config"),
             hard_token_limit=settings.boundary_detection.hard_token_limit,
             hard_msg_limit=settings.boundary_detection.hard_msg_limit,
+            qwen_context_tokens=settings.memo_vault_candidates.qwen_context_tokens,
+            qwen_model=settings.memo_vault_candidates.qwen_model,
         )
     except LLMNotConfiguredError as exc:
         raise ProviderNotConfiguredError(
@@ -140,7 +142,9 @@ async def extract_candidates(
             "profile": "画像",
         }[exc.stage]
         message = (
-            f"候选抽取的{stage_label}输出多次达到长度上限，结构化结果被截断；"
+            f"候选抽取的{stage_label}输入超过配置的模型上下文，请检查上下文和分片配置后重试。"
+            if exc.reason == "input_context"
+            else f"候选抽取的{stage_label}输出多次达到长度上限，结构化结果被截断；"
             "本次结果未保存，可以调整模型或缩短输入后重试。"
             if exc.reason == "output_truncated"
             else f"候选抽取模型多次返回无效的{stage_label}格式；本次结果未保存，可以稍后重试。"

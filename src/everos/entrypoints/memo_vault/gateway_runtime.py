@@ -78,7 +78,7 @@ def configure_gateway(app: FastAPI, store: VaultStore, adapter: Any) -> GatewayS
         originals = to_pack_sources(sources)
         request = PackPreviewRequest(
             namespaces=sorted({s.namespace for s in sources}) or ["personal"],
-            kinds=list(dict.fromkeys(s.kind for s in sources))
+            kinds=list(dict.fromkeys(GatewayService._gateway_kind(s) for s in sources))
             or ["fact", "episode", "profile"],
             memory_ids=[s.memory_id for s in sources],
             **config,

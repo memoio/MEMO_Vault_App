@@ -50,6 +50,8 @@ async def create_manual_candidate(
     candidate_id = uuid.uuid4().hex
     batch_id = f"manual_{candidate_id}"
     created_at = datetime.now(timezone.utc)
+    if body.kind == "preference":
+        body.kind = "profile"
     memory_type = "episode" if body.kind == "episode" else "profile"
     metadata = (
         {
@@ -152,7 +154,10 @@ async def list_candidates(
     if status != "all":
         clauses.append("c.status = ?")
         params.append(status)
-    if kind:
+    if kind in {"profile", "preference"}:
+        clauses.append("c.kind IN (?, ?)")
+        params.extend(["profile", "preference"])
+    elif kind:
         clauses.append("c.kind = ?")
         params.append(kind)
     if origin:
@@ -413,14 +418,17 @@ async def confirm_candidate(
                     "message": "Choose an existing project space.",
                 },
             )
+        if body.kind == "preference":
+            body.kind = "profile"
+        existing_kind = "profile" if row["kind"] == "preference" else row["kind"]
         if (row["memory_type"] == "episode" and body.kind != "episode") or (
-            row["memory_type"] == "profile" and body.kind != row["kind"]
+            row["memory_type"] == "profile" and body.kind != existing_kind
         ):
             raise HTTPException(status_code=422, detail={
                 "code": "CANDIDATE_TYPE_MISMATCH",
                 "message": "Episode and Profile candidates must keep their EverOS memory type.",
             })
-        if row["origin"] == "manual" and body.kind != row["kind"]:
+        if row["origin"] == "manual" and body.kind != existing_kind:
             raise HTTPException(status_code=422, detail={
                 "code": "CANDIDATE_TYPE_MISMATCH",
                 "message": "Manually added candidates must keep the selected memory type.",

@@ -674,7 +674,7 @@ class KnowledgeExtractionSettings(BaseModel):
 
     backend: Literal["auto", "ollama", "everalgo"] = "auto"
     ollama_base_url: str | None = None
-    total_timeout_seconds: float = Field(default=600.0, gt=0)
+    total_timeout_seconds: float = Field(default=7200.0, gt=0)
 
 
 class KnowledgeSettings(BaseModel):
@@ -683,6 +683,13 @@ class KnowledgeSettings(BaseModel):
     max_upload_bytes: int = 52_428_800  # 50 MiB
     extraction: KnowledgeExtractionSettings = KnowledgeExtractionSettings()
     search: KnowledgeSearchSettings = KnowledgeSearchSettings()
+
+
+class MemoVaultCandidateSettings(BaseModel):
+    """Optional Qwen tokenizer budgeting for Vault candidate extraction."""
+
+    qwen_context_tokens: int = Field(default=0, ge=0, le=32768)
+    qwen_model: str | None = None
 
 
 class ObservabilitySettings(BaseModel):
@@ -751,6 +758,7 @@ class Settings(BaseSettings):
     cascade: CascadeSettings = CascadeSettings()
     multimodal: MultimodalSettings = MultimodalSettings()
     knowledge: KnowledgeSettings = KnowledgeSettings()
+    memo_vault_candidates: MemoVaultCandidateSettings = MemoVaultCandidateSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
 
     model_config = SettingsConfigDict(

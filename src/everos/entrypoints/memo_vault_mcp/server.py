@@ -144,6 +144,8 @@ def create_server(client: GatewayMcpClient):
                     "project_ids"
                 ]
                 schema["properties"]["project_ids"]["default"] = allowed["project_ids"]
+                kinds_schema = schema["properties"]["kinds"]["anyOf"][0]["items"]
+                kinds_schema["enum"] = ["episode", "profile"]
             else:
                 from copy import deepcopy
 

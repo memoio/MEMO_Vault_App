@@ -65,6 +65,11 @@ async def test_real_mcp_tool_discovery_read_and_revocation(tmp_path):
                 await client.initialize()
                 tools = await client.list_tools()
                 assert {t.name for t in tools.tools} == {"search_memory", "get_memory"}
+                schema = next(
+                    t.inputSchema for t in tools.tools if t.name == "search_memory"
+                )
+                kinds = schema["properties"]["kinds"]["anyOf"][0]["items"]["enum"]
+                assert kinds == ["episode", "profile"]
                 get_schema = next(
                     t.inputSchema for t in tools.tools if t.name == "get_memory"
                 )

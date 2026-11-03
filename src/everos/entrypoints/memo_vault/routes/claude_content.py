@@ -239,7 +239,7 @@ def _review(
                 """INSERT INTO candidates
                 (id,batch_id,everos_scope,kind,memory_type,metadata_json,content,
                  status,origin,evidence_kind,target_project_id)
-                VALUES (?,?,?,'preference','profile',?,?,
+                VALUES (?,?,?,'profile','profile',?,?,
                         'pending','import','source_claim',?)""",
                 (
                     candidate_id,
@@ -664,7 +664,7 @@ async def _deliver_record(
         adapter = request.app.state.everos_adapter
         try:
             async with httpx.AsyncClient(
-                timeout=(float(os.environ.get("MEMO_VAULT_KNOWLEDGE_TIMEOUT_SECONDS", "7200")) if background else adapter.timeout_seconds), transport=adapter.transport
+                timeout=(float(os.environ.get("MEMO_VAULT_KNOWLEDGE_TIMEOUT_SECONDS", "7800")) if background else adapter.timeout_seconds), transport=adapter.transport
             ) as client:
                 response = await client.post(
                     f"{adapter.base_url}/api/v2/knowledge/documents",

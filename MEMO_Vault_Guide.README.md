@@ -126,6 +126,10 @@ Ollama 或其他已配置模型服务
 
 通用 Markdown、TXT、JSON 和受限 ZIP 走通用解析路径。没有对话角色结构的普通文本当前按用户消息处理；尚未将所有通用文件自动当作 Knowledge 文档生成 Topic。
 
+候选抽取可选使用 Qwen2.5 3B 的 8,192 token 上下文预算：先使用 `examples/local-ollama/Modelfile.memo-vault-8k` 创建专用 Ollama 模型，确认 `ollama ps` 显示实际 CONTEXT 为 8192，再在 EverOS 数据根目录的 `everos.toml` 的 `[memo_vault_candidates]` 段设置 `qwen_context_tokens = 8192` 和 `qwen_model = "qwen2.5:3b-memo-8k"`。该优化默认关闭；专用模型仅用于候选抽取，不更改 Knowledge 等其他通道的模型配置。需要 Python 的 `tokenizers`、`huggingface_hub` 及本地缓存的 `Qwen/Qwen2.5-3B-Instruct` `tokenizer.json`；也可通过 EverOS 进程环境变量 `MEMO_VAULT_QWEN_TOKENIZER_PATH` 指向该文件。运行时不联网下载词表。配置值必须与 Ollama 实际运行上下文一致；不足 8192 或词表不可用时不要启用。内存和速度需在目标机器验证。
+
+在项目根目录执行 `ollama create qwen2.5:3b-memo-8k -f examples/local-ollama/Modelfile.memo-vault-8k` 创建模型；首次使用此配置前应确保 EverOS 运行用户能够读取词表，并在抽取期间检查 `ollama ps`。修改 EverOS 配置后需重启 EverOS 服务。
+
 ### 三个平台测试数据导入
 
 启动 Ollama、EverOS、Vault 后端和前端。管理页面默认无需输入所有者凭据；如已开启认证，则先使用所有者凭据连接。导入不需要外部网关；浏览器文件选择框读取的是浏览器所在电脑的文件。

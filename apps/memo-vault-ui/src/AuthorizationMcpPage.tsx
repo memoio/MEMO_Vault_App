@@ -4,7 +4,7 @@ import { text as t } from './authorization.zh';
 import { callGateway, createGrant, deleteGrant, gatewayStatus, getGrantAudit, listGrants, pauseGateway, revokeGrant, rotateGrant, type AuditRow, type FixedDraft, type GatewayOperation, type GatewayStatus, type Grant, type GrantInput } from './gatewayApi';
 
 const liveOps: GatewayOperation[] = ['search_memory', 'get_memory', 'build_context', 'get_evidence'];
-const kinds: PackKind[] = ['fact', 'episode', 'profile'];
+const kinds: PackKind[] = ['episode', 'profile'];
 const pageSize = 20;
 const initial: GrantInput = { subject: '', purpose: '', mode: 'live_scope', project_ids: [], kinds,
   operations: ['search_memory', 'get_memory', 'build_context'], expires_in_hours: 24, token_budget: 4000,
@@ -27,7 +27,7 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
   const [selectedId, setSelectedId] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<GrantInput>(initial);
-  const [tab, setTab] = useState<'api' | 'mcp'>('mcp');
+  const [tab, setTab] = useState<'api' | 'mcp' | 'mcp-local'>('mcp');
   const [token, setToken] = useState('');
   const [revealed, setRevealed] = useState<{ grantId: string; token: string } | null>(null);
   const [operation, setOperation] = useState<GatewayOperation>('search_memory');
@@ -164,7 +164,10 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
     }
     finally { if (serial === sequence.current) setBusy(false); }
   }
-  const template = selected && status ? (tab === 'mcp' ? JSON.stringify({ mcpServers: { 'memo-vault': {
+  const mcpUrl = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
+    ? `http://${window.location.hostname}:8767/mcp`
+    : `${window.location.origin}/mcp`;
+  const template = selected && status ? (tab === 'mcp' ? JSON.stringify({ url: mcpUrl, transport: 'streamable-http', headers: { Authorization: 'Bearer <YOUR_TOKEN>' } }, null, 2) : tab === 'mcp-local' ? JSON.stringify({ mcpServers: { 'memo-vault': {
     command: 'everos', args: ['vault-mcp', '--gateway', status.gateway_url], env: { MEMO_VAULT_TOKEN: '<YOUR_TOKEN>' },
   } } }, null, 2) : `curl -X POST '${status.gateway_url}/api/v1/external/${selected.mode === 'approved_pack' ? `packs/${selected.pack_id}/deliver` : 'context/build'}' \\\n  -H 'Authorization: Bearer <YOUR_TOKEN>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify(selected.mode === 'approved_pack' ? {} : { project_ids: selected.project_ids, query: '<KEYWORD>', token_budget: Math.min(4000, selected.token_budget) })}'`) : '';
 
@@ -204,10 +207,11 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
     <div className="authorization-cards">
       <section className="panel integration-panel"><div className="actions" role="tablist">
         <button role="tab" aria-selected={tab === 'mcp'} className={tab === 'mcp' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('mcp')}>{t.mcpConfig}</button>
+        <button role="tab" aria-selected={tab === 'mcp-local'} className={tab === 'mcp-local' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('mcp-local')}>本地 STDIO</button>
         <button role="tab" aria-selected={tab === 'api'} className={tab === 'api' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('api')}>{t.apiConfig}</button>
       </div><label>{t.choose}<select value={selectedId} onChange={e => setSelectedId(e.target.value)}><option value="">—</option>{grants.map(g => <option key={g.id} value={g.id}>{g.subject} · {g.project_ids.join(', ')} · {g.id.slice(0,6)}</option>)}</select></label>
         {template ? <pre tabIndex={0}>{template}</pre> : <p>{t.noSelection}</p>}
-        <button className="secondary-button" disabled={!template} onClick={() => void copy(template)}>{t.copy}</button><p className="muted">{t.templateHint}</p>{tab === 'mcp' && <p className="muted">{t.install}</p>}
+        <button className="secondary-button" disabled={!template} onClick={() => void copy(template)}>{t.copy}</button><p className="muted">{t.templateHint}</p>{tab === 'mcp-local' && <p className="muted">{t.install}</p>}{tab === 'mcp' && <p className="muted">需部署远程 MCP 服务并配置 /mcp 代理；客户端须支持 Streamable HTTP 和 Bearer 请求头。</p>}
       </section>
       <section className="panel connection-panel"><h2>{t.connection}</h2><p className="muted">{t.testHint}</p>
         <label>{t.subject}<input value={selected?.subject ?? ''} readOnly /></label>

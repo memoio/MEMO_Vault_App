@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,7 +77,7 @@ class OllamaKnowledgeExtractor:
         model: str,
         api_key: str = "",
         timeout: float = 180,
-        total_timeout: float = 600,
+        total_timeout: float = 7200,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -96,6 +97,7 @@ class OllamaKnowledgeExtractor:
     ) -> list[KnowledgeMemory]:
         if not parsed.text.strip():
             return []
+        started = time.monotonic()
         try:
             async with asyncio.timeout(self.total_timeout):
                 headers = (
@@ -117,10 +119,20 @@ class OllamaKnowledgeExtractor:
                         categories or [],
                         category_id,
                     )
-        except (TimeoutError, httpx.HTTPError) as exc:
+        except TimeoutError as exc:
+            logger.warning("ollama_knowledge_timeout", kind="total_deadline", elapsed_seconds=round(time.monotonic() - started, 2), total_timeout_seconds=self.total_timeout, request_timeout_seconds=self.timeout)
             raise IncompleteExtractionError(
-                "Ollama Knowledge extraction timed out or is unavailable; "
-                "no partial document was accepted."
+                "Ollama Knowledge extraction exceeded the total deadline; no partial document was accepted."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            logger.warning("ollama_knowledge_timeout", kind="request", exception_type=type(exc).__name__, elapsed_seconds=round(time.monotonic() - started, 2), total_timeout_seconds=self.total_timeout, request_timeout_seconds=self.timeout)
+            raise IncompleteExtractionError(
+                "Ollama request timed out during Knowledge extraction; no partial document was accepted."
+            ) from exc
+        except httpx.HTTPError as exc:
+            logger.warning("ollama_knowledge_http_error", exception_type=type(exc).__name__, elapsed_seconds=round(time.monotonic() - started, 2))
+            raise IncompleteExtractionError(
+                "Ollama is unavailable during Knowledge extraction; no partial document was accepted."
             ) from exc
 
     @staticmethod
@@ -202,10 +214,12 @@ class OllamaKnowledgeExtractor:
         registry = {b.id: b for b in blocks}
         topics: list[Topic] = []
         batches = self._batches(blocks, prompt_title, window)
-        for batch in batches:
+        logger.info("ollama_knowledge_started", context_tokens=window, source_chars=len(text), blocks=len(blocks), batches=len(batches))
+        for index, batch in enumerate(batches, start=1):
             topics.extend(
                 await self._unit(client, window, prompt_title, batch, registry)
             )
+            logger.info("ollama_knowledge_batch_complete", batch=index, batches=len(batches))
         assigned = [i for topic in topics for i in topic.ids]
         expected = set(registry)
         if len(assigned) != len(expected) or set(assigned) != expected:

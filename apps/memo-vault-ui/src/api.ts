@@ -506,7 +506,7 @@ export async function getCandidates(filters: { status?: string; kind?: string; o
 }
 
 export interface ManualCandidateInput {
-  kind: "episode" | "preference";
+  kind: "episode" | "profile";
   namespace: string;
   validity_days: 30 | 90 | null;
   external_use: "allow" | "ask" | "deny";

@@ -9,7 +9,7 @@ export const text = {
   intro: '授权单位：主体 × 项目空间 × 操作 × 有效期。实时授权只读取允许外发的正式记忆。',
   empty: '尚无授权。新建授权后即可连接外部程序或 AI 应用。', loading: '正在读取授权…', refresh: '刷新',
   allGrants: '全部', activeGrants: '生效中', historyGrants: '历史授权', pageSummary: (from: number, to: number, total: number) => `第 ${from}–${to} 条，共 ${total} 条`, previousPage: '上一页', nextPage: '下一页',
-  mcpConfig: 'MCP 配置', apiConfig: 'API 调用', copy: '复制模板', copied: '已复制',
+  mcpConfig: '远程 MCP', apiConfig: 'API 调用', copy: '复制模板', copied: '已复制',
   choose: '选择授权', tokenOnce: '凭证只显示这一次，请妥善保存。离开页面后无法找回，可为有效授权更换凭证。',
   revealCopy: '复制本次凭证', templateHint: '模板中的 <YOUR_TOKEN> 必须替换为你的凭证。将含凭证的配置保存在本机私密位置。',
   install: '先在运行 AI 应用的机器安装 everos[mcp]，并确认 everos 命令可执行。MCP 是本地进程，网关地址必须能从该机器访问。',

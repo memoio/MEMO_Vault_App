@@ -182,6 +182,8 @@ def _persist_candidates(
                         ),
                     },
                 )
+            if kind == "preference":
+                kind = "profile"
             unique_source_ids = list(dict.fromkeys(source_ids))
             placeholders = ",".join("?" for _ in unique_source_ids)
             source_rows = connection.execute(
