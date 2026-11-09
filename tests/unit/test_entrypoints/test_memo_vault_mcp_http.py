@@ -84,3 +84,58 @@ async def test_remote_mcp_requires_scoped_key_and_rechecks_revocation(
             assert (
                 await client.post("/mcp", json=body, headers=headers)
             ).status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_remote_fixed_pack_uses_current_grant_without_pack_id(
+    gateway_runtime_fixture,  # noqa: F811
+):
+    owner, external, _ = gateway_runtime_fixture
+    service = owner.state.gateway_service
+    sources = await service.load_sources(["personal"])
+    selected = [s for s in sources if s.memory_id == "visible"]
+    manifest = service.manifest(
+        selected,
+        {"format": "markdown", "evidence_mode": "none", "token_budget": 4000},
+        "2026-10-20T00:00:00Z",
+    )
+    repo = owner.state.gateway_repository
+    grant = repo.create_grant(
+        GrantCreate(
+            subject="fixed-http",
+            purpose="test",
+            mode="approved_pack",
+            project_ids=["personal"],
+        ).model_dump(mode="json"),
+        manifest=manifest,
+    )
+    repo.set_paused(False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=external), base_url="http://127.0.0.1"
+    ) as gateway:
+        app = create_http_app(gateway="http://127.0.0.1", http=gateway)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as client,
+        ):
+            body = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_pack_info", "arguments": {}},
+            }
+            headers = {
+                "Authorization": "Bearer " + grant["token"],
+                "Accept": "application/json, text/event-stream",
+            }
+            result = await client.post("/mcp", json=body, headers=headers)
+            assert result.status_code == 200, result.text
+            data = result.json()["result"]
+            assert data.get("isError") is not True
+            assert data["structuredContent"]["data"]["pack_id"] == grant["pack_id"]
+            repo.revoke(grant["id"])
+            assert (
+                await client.post("/mcp", json=body, headers=headers)
+            ).status_code == 403

@@ -125,7 +125,6 @@ def create_server(client: GatewayMcpClient):
     fixed_schema = {
         "type": "object",
         "properties": {"pack_id": {"type": "string", "minLength": 1, "maxLength": 256}},
-        "required": ["pack_id"],
         "additionalProperties": False,
     }
 
@@ -188,15 +187,25 @@ def create_server(client: GatewayMcpClient):
                 body = model.model_validate(arguments).model_dump(exclude_none=True)
                 result = await client.request(path, body)
             elif name in {"get_pack_info", "read_memory_pack"}:
-                if (
-                    set(arguments) != {"pack_id"}
-                    or not isinstance(arguments["pack_id"], str)
-                    or not 1 <= len(arguments["pack_id"]) <= 256
-                ):
+                if set(arguments) - {"pack_id"}:
+                    raise ValueError
+                pack_id = arguments.get("pack_id")
+                if pack_id is None and "pack_id" not in arguments:
+                    capabilities = await client.request("/capabilities")
+                    allowed = capabilities.get("data", {})
+                    if allowed.get(
+                        "mode"
+                    ) != "approved_pack" or name not in allowed.get("operations", []):
+                        return CallToolResult(
+                            content=[TextContent(type="text", text="ACCESS_DENIED")],
+                            isError=True,
+                        )
+                    pack_id = allowed.get("pack_id")
+                if not isinstance(pack_id, str) or not 1 <= len(pack_id) <= 256:
                     raise ValueError
                 from urllib.parse import quote
 
-                path = "/packs/" + quote(arguments["pack_id"], safe="")
+                path = "/packs/" + quote(pack_id, safe="")
                 result = (
                     await client.request(path + "/deliver", {})
                     if name == "read_memory_pack"

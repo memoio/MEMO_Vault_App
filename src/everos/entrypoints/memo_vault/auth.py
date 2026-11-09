@@ -59,7 +59,7 @@ class OwnerSecurity:
         self.allowed_hosts = {"localhost", "127.0.0.1", "::1"} | {
             urlsplit(o).hostname for o in self.allowed_origins
         }
-        self.public_demo = os.environ.get("MEMO_VAULT_PUBLIC_DEMO", "1") == "1"
+        self.public_demo = os.environ.get("MEMO_VAULT_PUBLIC_DEMO", "0") == "1"
         self.sessions: dict[str, float] = {}
         self.attempts: dict[str, deque[float]] = defaultdict(deque)
 

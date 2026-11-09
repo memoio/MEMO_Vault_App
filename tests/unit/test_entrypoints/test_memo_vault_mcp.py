@@ -153,9 +153,10 @@ async def test_fixed_pack_is_discoverable_and_deliverable_from_token_only(tmp_pa
                 tools = await client.list_tools()
                 tool = next(t for t in tools.tools if t.name == "read_memory_pack")
                 discovered_id = tool.inputSchema["properties"]["pack_id"]["enum"][0]
-                result = await client.call_tool(
-                    "read_memory_pack", {"pack_id": discovered_id}
-                )
+                info = await client.call_tool("get_pack_info", {})
+                assert not info.isError
+                assert info.structuredContent["data"]["pack_id"] == discovered_id
+                result = await client.call_tool("read_memory_pack", {})
                 assert not result.isError
                 assert (
                     result.structuredContent["data"]["pack"]["memories"][0]["text"]
