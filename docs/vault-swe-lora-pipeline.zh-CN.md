@@ -1,5 +1,7 @@
 # SWE-Agent Qwen3.5 QLoRA 脚本使用说明
 
+> **训练路径更新：**新实验优先使用 [LLaMA-Factory 路径](vault-swe-llamafactory.zh-CN.md)。本文的 `convert` 仍然复用；下文 `prepare` 和 `train` 是保留的自写训练对照，不是新路径的训练命令。
+
 脚本：`src/everos/agent_training/swe_lora_pipeline.py`。它包含 `convert`（ADP 到上游 SWE-Agent XML 会话）、`prepare`（按决策生成 token 和标签）和 `train`（单 GPU 4-bit QLoRA、保存及重载检查）。它不启动 Docker、不执行轨迹中的工具，也不做真实闭环评测。
 
 **状态：**已用本机固定上游代码转换 240 条轨迹，并用一条轨迹和 Qwen3.5 tokenizer 检查数据准备；训练子命令尚未执行和端到端验证。曾完成的 9 步和 90 步训练来自先前的实验脚本，不能视为新脚本已通过训练验证。

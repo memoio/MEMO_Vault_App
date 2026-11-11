@@ -1,0 +1,3 @@
+{"id":"dev_sum_01","prompt":"Use the IPython tool to compute sum([13, 17, 29]). After observing the result, finish with the numeric answer in <solution> tags.","expected":"59","checker":"solution_exact"}
+{"id":"dev_sort_01","prompt":"Use the IPython tool to sort [9, 2, 7, 4] and find the third element of the sorted list. After observing the result, finish with that number in <solution> tags.","expected":"7","checker":"solution_exact"}
+{"id":"dev_count_01","prompt":"Use the IPython tool to count how many numbers in [3, 8, 12, 17, 20] are even. After observing the result, finish with that count in <solution> tags.","expected":"3","checker":"solution_exact"}
