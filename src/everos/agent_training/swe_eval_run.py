@@ -1,20 +1,58 @@
 """Run one SWE-Agent comparison arm on an isolated task; compare separate runs."""
-import argparse, hashlib, json, subprocess, time
+import argparse, hashlib, json, subprocess, sys, threading, time
 from pathlib import Path
 
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def success(baseline, agent, changed, after): return baseline==1 and agent==0 and changed and after==0
 
 def command(argv,cwd,log,timeout):
-    with log.open('w') as f:
+    names = {'baseline-test.log': '检查修复前的测试',
+             'sweagent.log': '运行 SWE-agent', 'post-test.log': '检查修复后的测试'}
+    stage = names.get(log.name, log.name)
+    started = time.monotonic()
+    done = threading.Event()
+    print(f'\n[评测] {stage}，超时上限 {timeout} 秒，日志: {log}', flush=True)
+
+    def display_log():
+        next_update = started + 30
+        with log.open('r', encoding='utf-8', errors='replace') as reader:
+            while True:
+                chunk = reader.read(8192)
+                if chunk:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    continue
+                if done.is_set():
+                    break
+                now = time.monotonic()
+                if now >= next_update:
+                    elapsed = int(now - started)
+                    remaining = max(0, timeout - elapsed)
+                    print(f'\n[评测] {stage}已用 {elapsed} 秒；距超时约 {remaining} 秒（不是完成时间预测）', flush=True)
+                    next_update = now + 30
+                done.wait(0.5)
+
+    with log.open('w', encoding='utf-8') as f:
+        monitor = threading.Thread(target=display_log, daemon=True)
+        monitor.start()
         try:
-            r=subprocess.run(argv,cwd=cwd,stdout=f,stderr=subprocess.STDOUT,timeout=timeout)
-            return r.returncode
-        except subprocess.TimeoutExpired:
-            f.write('\nTIMEOUT\n'); return 124
+            try:
+                result = subprocess.run(argv,cwd=cwd,stdout=f,stderr=subprocess.STDOUT,timeout=timeout)
+                code = result.returncode
+            except subprocess.TimeoutExpired:
+                f.write('\nTIMEOUT\n')
+                f.flush()
+                code = 124
+        finally:
+            f.flush()
+            done.set()
+            monitor.join()
+    print(f'\n[评测] {stage}结束，退出码 {code}，耗时 {time.monotonic()-started:.1f} 秒', flush=True)
+    return code
 
 def run(a):
     repo=a.repo.resolve(); config=a.config.resolve(); problem=a.problem.resolve(); out=a.output.resolve()
+    print(f'[评测] 开始 {a.label}；结果目录: {out}', flush=True)
     if out.exists(): raise ValueError('output directory already exists')
     if '@sha256:' not in a.image: raise ValueError('use immutable docker image digest')
     commit=subprocess.check_output(['git','-C',str(repo),'rev-parse',a.commit+'^{commit}'],text=True).strip()
@@ -26,6 +64,8 @@ def run(a):
     def test(dir,log):
         return command(['docker','run','--rm','--network','none','--memory',a.memory,'--cpus',a.cpus,'--mount',f'type=bind,src={dir},dst=/workspace','-w','/workspace','--entrypoint','/bin/sh',a.image,'-lc',a.test_command],None,log,a.timeout)
     before=test(out/'baseline-repo',out/'baseline-test.log')
+    if before == 1:
+        print('[评测] 原始测试按预期失败，开始运行 agent。', flush=True)
     meta={'label':a.label,'model_identity':a.model_identity,'source_commit':commit,'problem_sha256':sha(problem),'config_sha256':sha(config),'image':a.image,'test_command':a.test_command,'baseline_exit':before,'memory':a.memory,'cpus':a.cpus,'timeout':a.timeout,'protected_paths':a.protected_path}
     if before!=1:
         meta.update(status='invalid_baseline',reason='expected test command exit 1; check baseline-test.log')

@@ -1,3 +1,4 @@
+import AgentChatPage from "./AgentChatPage";
 import AuthorizationMcpPage from "./AuthorizationMcpPage";
 import { createPackDraft, type FixedDraft } from "./gatewayApi";
 import { text as authText } from "./authorization.zh";
@@ -59,6 +60,7 @@ const pages = [
   { id: "pack", title: "导出中心", description: "导出已确认的正式记忆或项目 Knowledge 原始文档。" },
   { id: "authorization", title: authText.title, description: authText.description },
   { id: "adp", title: "ADP / ATIF 导出 Beta", description: "真实 Agent 轨迹 → ADP / ATIF 候选数据" },
+  { id: "agent-chat", title: "对话 Agent", description: "在项目空间中与本地模型对话。" },
 ] as const;
 const wizardSteps = ["选择来源", "上传与检查", "解析预览", "抽取与审核", "完成"];
 const sources = [
@@ -1084,7 +1086,9 @@ export default function App() {
           </div>
         </header>
 
-        {pageId === "adp" ? (
+        {pageId === "agent-chat" ? (
+          <AgentChatPage projects={projects} />
+        ) : pageId === "adp" ? (
           <AdpExport />
         ) : pageId === "authorization" ? (
           <AuthorizationMcpPage projects={projects} draft={authorizationDraft} onOpenPack={() => setPageId("pack")} onDraftUsed={() => setAuthorizationDraft(null)} />

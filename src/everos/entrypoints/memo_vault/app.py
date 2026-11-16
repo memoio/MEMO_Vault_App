@@ -9,6 +9,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .adapter import EverOSHttpAdapter
+from .agent_chat_service import AgentChatStore
+from .agent_chat_runtime import AgentRuntime
+from .openhands_runtime import OpenHandsRuntime
+from .swe_runtime import SWERuntime
+from .agentlab_runtime import AgentLabRuntime
+from .routes import agent_chat
 from .auth import OwnerSecurity, install_owner_security
 from .config import get_settings
 from .gateway_runtime import configure_gateway
@@ -38,6 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = VaultStore(settings.data_dir)
     store.initialize()
     app.state.vault_store = store
+    app.state.agent_chat_store = AgentChatStore(store)
+    app.state.agent_chat_store.initialize()
+    app.state.agent_runtime = AgentRuntime()
+    app.state.openhands_runtime = OpenHandsRuntime(app.state.agent_runtime)
+    app.state.swe_runtime = SWERuntime(app.state.agent_runtime)
+    app.state.agentlab_runtime = AgentLabRuntime(app.state.agent_runtime)
+    app.state.agent_chat_tasks = set()
     app.state.extraction_tasks = set()
     app.state.knowledge_delivery_tasks = set()
     app.state.knowledge_export_tasks = set()
@@ -76,6 +89,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        chat_tasks = list(app.state.agent_chat_tasks)
+        for task in chat_tasks:
+            task.cancel()
+        if chat_tasks:
+            await asyncio.gather(*chat_tasks, return_exceptions=True)
+        await app.state.agent_runtime.close()
         export_tasks = list(app.state.knowledge_export_tasks)
         for task in export_tasks:
             task.cancel()
@@ -119,5 +138,6 @@ app.include_router(claude_content.router, prefix="/api/v1")
 app.include_router(knowledge_exports.router, prefix="/api/v1")
 
 app.include_router(grants.router, prefix="/api/v1")
+app.include_router(agent_chat.router, prefix="/api/v1")
 app.add_middleware(ClaudeLocalUploadLimitMiddleware)
 install_owner_security(app)
