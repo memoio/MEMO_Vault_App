@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
+from everos.component.tokenizer import build_tokenizer
 from everos.component.utils.datetime import from_iso_format, get_utc_now
 from everos.infra.memo_vault_gateway import (
     GatewayRepository,
@@ -36,6 +37,9 @@ class GatewayService:
         self.repository = repository
         self.load_sources = load_sources
         self.render = render
+        self.expand_search_scope: Callable[[list[str], list[str]], list[str]] = (
+            lambda scope, _authorized: scope
+        )
 
     def capabilities(self, token: str) -> dict[str, Any]:
         try:
@@ -194,6 +198,8 @@ class GatewayService:
             raise GatewayError()
         if grant["mode"] == "approved_pack" and body.get("pack_id") != grant["pack_id"]:
             raise GatewayError()
+        if grant["mode"] == "live_scope" and operation in {"search_memory", "build_context", "get_memory", "get_evidence"}:
+            scope = self.expand_search_scope(scope, grant["project_ids"])
         sources = await self.load_sources(scope)
         sources = [
             s
@@ -251,7 +257,20 @@ class GatewayService:
         query = body.get("query", "").strip().casefold()
         if not query:
             raise GatewayError("QUERY_REQUIRED", 422)
-        matches = [s for s in visible if query in (s.content or "").casefold()]
+        # Search only within already-authorized, eligible content. Full phrase
+        # matches rank first; otherwise match individual meaningful query terms.
+        terms = set(build_tokenizer().tokenize(query))
+        scored: list[tuple[int, SourceMemory]] = []
+        for source in visible:
+            content = (source.content or "").casefold()
+            if query in content:
+                scored.append((len(terms) + 1, source))
+            else:
+                score = sum(term in content for term in terms)
+                if score:
+                    scored.append((score, source))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        matches = [source for _, source in scored]
         if operation == "search_memory":
             start = self._read_cursor(body.get("cursor"), grant, body, matches)
             limit = body.get("limit", 10)
@@ -265,7 +284,7 @@ class GatewayService:
                 {
                     "memories": [self._item(s, snippet=True) for s in selected],
                     "next_cursor": cursor,
-                    "search_mode": "keyword",
+                    "search_mode": "keyword_fuzzy",
                 },
                 selected,
                 None,

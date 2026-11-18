@@ -171,7 +171,7 @@ async def list_candidates(
                        c.origin, c.target_project_id, c.validity_days, c.valid_until,
                        b.original_filename AS filename, b.project_id, b.raw_relpath,
                        b.file_sha256,
-                       e.message_id, e.quote, m.role, m.timestamp_ms,
+                       e.message_id, e.quote, m.role, m.timestamp_ms, m.conversation_id,
                        m.content AS source_content, m.batch_id AS source_batch_id
                 FROM candidates c
                 JOIN import_batches b ON b.id = c.batch_id
@@ -231,6 +231,7 @@ async def list_candidates(
             item["evidence"].append(
                 {
                     "message_id": row["message_id"],
+                    "conversation_id": row["conversation_id"],
                     "role": row["role"],
                     "timestamp_ms": row["timestamp_ms"],
                 }
@@ -465,7 +466,7 @@ async def confirm_candidate(
             if row["origin"] == "import"
             else evidence_status(approved_content, source_texts)
         )
-        if candidate_evidence_status not in {"valid", "not_required"}:
+        if candidate_evidence_status not in {"valid", "not_required"} and not body.confirm_as_manual:
             raise HTTPException(status_code=422, detail={
                 "code": "CANDIDATE_EVIDENCE_INVALID",
                 "message": "A linked message and an unchanged archived source file are required before publication. Reject this candidate or restore its source before publication.",
@@ -503,7 +504,8 @@ async def confirm_candidate(
         revision = row["revision"] + (
             approved_content != row["content"] or body.kind != row["kind"]
         )
-        evidence_kind = "human_authored" if row["origin"] == "manual" else body.evidence_kind
+        manual_review = row["origin"] == "manual" or (body.confirm_as_manual and candidate_evidence_status not in {"valid", "not_required"})
+        evidence_kind = "human_authored" if manual_review else "human_verified"
         valid_until = (datetime.now(timezone.utc) + timedelta(days=body.validity_days)).isoformat() if body.validity_days else None
         connection.execute(
             """UPDATE candidates SET content = ?, kind = ?, revision = ?,
@@ -558,8 +560,9 @@ async def confirm_candidate(
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """UPDATE candidates SET status = 'confirmed', everos_memory_id = ?,
+               origin = CASE WHEN ? THEN 'manual' ELSE origin END,
                updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'publishing'""",
-            (memory.memory_id, candidate_id),
+            (memory.memory_id, manual_review, candidate_id),
         )
         connection.execute(
             """INSERT OR IGNORE INTO memories
@@ -575,10 +578,15 @@ async def confirm_candidate(
                 memory.revision,
                 evidence_kind,
                 body.external_use,
-                row["origin"],
+                "manual" if manual_review else row["origin"],
                 valid_until,
             ),
         )
+        if manual_review and row["origin"] != "manual":
+            connection.execute(
+                "INSERT INTO import_events (id, batch_id, event_type) VALUES (?, ?, 'candidate_marked_manual')",
+                (uuid.uuid4().hex, batch["batch_id"]),
+            )
         connection.execute(
             "INSERT INTO import_events (id, batch_id, event_type) "
             "VALUES (?, ?, 'candidate_confirmed')",

@@ -1,7 +1,8 @@
+import RemoteMcpGuide from './RemoteMcpGuide';
 import { useEffect, useRef, useState } from 'react';
 import type { PackKind, ProjectSpace } from './api';
 import { text as t } from './authorization.zh';
-import { callGateway, createGrant, deleteGrant, gatewayStatus, getGrantAudit, listGrants, pauseGateway, revokeGrant, rotateGrant, type AuditRow, type FixedDraft, type GatewayOperation, type GatewayStatus, type Grant, type GrantInput } from './gatewayApi';
+import { callGateway, createGrant, deleteGrant, gatewayStatus, getGrantAudit, getGrantCredential, listGrants, pauseGateway, revokeGrant, rotateGrant, verifyGrantToken, type AuditRow, type FixedDraft, type GatewayOperation, type GatewayStatus, type Grant, type GrantInput } from './gatewayApi';
 
 const liveOps: GatewayOperation[] = ['search_memory', 'get_memory', 'build_context', 'get_evidence'];
 const kinds: PackKind[] = ['episode', 'profile'];
@@ -23,25 +24,40 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [connectionError, setConnectionError] = useState('');
-  const [notice, setNotice] = useState('');
   const [selectedId, setSelectedId] = useState('');
+  const [configSelections, setConfigSelections] = useState<Record<'mcp' | 'mcp-local' | 'api', string>>({ mcp: '', 'mcp-local': '', api: '' });
+  const [grantCache, setGrantCache] = useState<Record<string, Grant>>({});
+  const selectionInitialized = useRef(false);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<GrantInput>(initial);
   const [tab, setTab] = useState<'api' | 'mcp' | 'mcp-local'>('mcp');
-  const [token, setToken] = useState('');
+  const [sessionTokens, setSessionTokens] = useState<Record<string, string>>({});
+  const [tokenInputs, setTokenInputs] = useState<Record<string, string>>({});
+  const token = tokenInputs[selectedId] ?? sessionTokens[selectedId] ?? '';
+  const setToken = (value: string) => setTokenInputs(current => ({ ...current, [selectedId]: value }));
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const [revealed, setRevealed] = useState<{ grantId: string; token: string } | null>(null);
   const [operation, setOperation] = useState<GatewayOperation>('search_memory');
   const [project, setProject] = useState('');
   const [query, setQuery] = useState('');
   const [memoryId, setMemoryId] = useState('');
   const [evidenceId, setEvidenceId] = useState('');
-  const [result, setResult] = useState('');
+  const [result, setResult] = useState<{ status: number; ok: boolean; elapsed: number; receipt: string | null; data: unknown } | null>(null);
   const [audit, setAudit] = useState<{ grantId: string; rows: AuditRow[]; loading: boolean } | null>(null);
   const testRequest = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const creationRequest = useRef({ payload: '', key: '' });
   const previousPause = useRef<boolean | undefined>(undefined);
-  const selected = grants.find(g => g.id === selectedId);
+  const selected = grantCache[selectedId];
+  const configSelectedId = configSelections[tab];
+  const configSelected = grantCache[configSelectedId];
+  const optionsFor = (id: string) => {
+    const cached = grantCache[id];
+    return cached && !grants.some(grant => grant.id === id) ? [cached, ...grants] : grants;
+  };
 
   async function refresh(offset = grantOffset, bucket = grantBucket) {
     setLoading(true); setError('');
@@ -54,16 +70,40 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
         items = (await listGrants(bucket, pageSize, actualOffset)).items;
       }
       setGrantOffset(actualOffset); setGrantTotal(page.total); setGrants(items); setStatus(state);
-      setSelectedId(current => items.some(g => g.id === current) ? current : items[0]?.id ?? '');
+      setGrantCache(current => ({ ...current, ...Object.fromEntries(items.map(grant => [grant.id, grant])) }));
+      if (!selectionInitialized.current && items.length) {
+        selectionInitialized.current = true;
+        const first = items[0].id;
+        setSelectedId(first);
+        setConfigSelections({ mcp: first, 'mcp-local': first, api: first });
+      }
     } catch (reason) { setError(message(reason)); }
     finally { setLoading(false); }
   }
   useEffect(() => { void refresh(); return () => { testRequest.current?.abort(); sequence.current++; }; }, []);
   useEffect(() => {
-    testRequest.current?.abort(); sequence.current++; setBusy(false); setToken(''); setRevealed(current => current?.grantId === selectedId ? current : null); setResult(''); setConnectionError(''); setAudit(null);
-    const current = grants.find(g => g.id === selectedId);
+    testRequest.current?.abort(); sequence.current++; setBusy(false); setRevealed(current => current?.grantId === selectedId ? current : null); setResult(null); setConnectionError(''); setAudit(null);
+    const current = grantCache[selectedId];
     setProject(current?.project_ids[0] ?? ''); setOperation(current?.operations[0] ?? 'search_memory');
   }, [selectedId]);
+  useEffect(() => {
+    let active = true;
+    const ids = [...new Set([selectedId, configSelectedId])].filter(Boolean);
+    for (const id of ids) {
+      const grant = grantCache[id];
+      if (!grant || grant.status !== 'active' || sessionTokens[id]) continue;
+      void getGrantCredential(id).then(({ token: restored }) => {
+        if (!active) return;
+        setSessionTokens(current => ({ ...current, [id]: restored }));
+        setTokenInputs(current => {
+          const entered = current[id]?.trim();
+          if (entered?.startsWith('mv_')) return current;
+          const next = { ...current }; delete next[id]; return next;
+        });
+      }).catch(() => { /* Older grants need their saved token or rotation. */ });
+    }
+    return () => { active = false; };
+  }, [selectedId, configSelectedId, selected?.version, selected?.status, configSelected?.version, configSelected?.status, sessionTokens]);
   useEffect(() => {
     if (!draft) return;
     setForm({ ...initial, mode: 'approved_pack', project_ids: draft.project_ids, kinds: draft.kinds,
@@ -80,12 +120,15 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
   }, [status?.paused]);
   useEffect(() => {
     if (selected && ['revoked', 'expired', 'stale'].includes(selected.status)) {
-      clearSecrets(); setBusy(false);
+      testRequest.current?.abort(); sequence.current++; setBusy(false);
+      setSessionTokens(current => { const next = { ...current }; delete next[selected.id]; return next; });
+      setTokenInputs(current => { const next = { ...current }; delete next[selected.id]; return next; });
+      setRevealed(null); setResult(null); setConnectionError('');
     }
-  }, [selected?.status]);
+  }, [selectedId, selected?.status]);
 
-  function clearSecrets() { testRequest.current?.abort(); sequence.current++; setToken(''); setRevealed(null); setResult(''); setConnectionError(''); }
-  async function copy(value: string) { try { await navigator.clipboard.writeText(value); setNotice(t.copied); } catch { setError('Clipboard unavailable. Select and copy the text manually.'); } }
+  function clearSecrets() { testRequest.current?.abort(); sequence.current++; setTokenInputs({}); setRevealed(null); setSessionTokens({}); setResult(null); setConnectionError(''); }
+  async function copy(value: string) { try { await navigator.clipboard.writeText(value); } catch { setError('Clipboard unavailable. Select and copy the text manually.'); } }
   function beginCreate(previous?: Grant) {
     if (previous?.status === 'active' && !window.confirm(t.duplicateConfirm)) return;
     setForm(previous ? { ...initial, mode: previous.mode, subject: previous.subject, purpose: previous.purpose,
@@ -100,23 +143,34 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
       const payload = JSON.stringify(form);
       if (creationRequest.current.payload !== payload) creationRequest.current = { payload, key: crypto.randomUUID() };
       const created = await createGrant(form, creationRequest.current.key);
-      await refresh(); setSelectedId(created.id); setShowForm(false); onDraftUsed();
-      // Selection changes clear prior secrets; a separate one-time reveal remains
-      // attached to the newly created record after that transition.
-      queueMicrotask(() => setRevealed({ grantId: created.id, token: created.token! }));
+      await refresh();
+      const { token: createdToken, ...createdGrant } = created;
+      setGrantCache(current => ({ ...current, [created.id]: createdGrant }));
+      setSelectedId(created.id);
+      setConfigSelections(current => ({ ...current, mcp: created.id }));
+      setTab('mcp');
+      setRevealed(createdToken ? { grantId: created.id, token: createdToken } : null);
+      if (createdToken) { setSessionTokens(current => ({ ...current, [created.id]: createdToken })); setTokenInputs(current => { const next = { ...current }; delete next[created.id]; return next; }); }
+      setShowForm(false); onDraftUsed();
     } catch (reason) { setError(message(reason)); }
     finally { setBusy(false); }
   }
   async function mutate(action: 'revoke' | 'rotate' | 'delete', grant: Grant) {
     const confirmation = action === 'revoke' ? t.revokeConfirm : action === 'delete' ? t.deleteConfirm : t.rotateConfirm;
     if (!window.confirm(confirmation)) return;
-    setBusy(true); setError(''); clearSecrets();
+    setBusy(true); setError('');
+    testRequest.current?.abort(); sequence.current++; setResult(null); setConnectionError('');
+    setSessionTokens(current => { const next = { ...current }; delete next[grant.id]; return next; });
+    setTokenInputs(current => { const next = { ...current }; delete next[grant.id]; return next; });
+    setRevealed(null);
     try {
       if (action === 'revoke') await revokeGrant(grant.id);
       else if (action === 'delete') {
         await deleteGrant(grant.id);
         if (selectedId === grant.id) setSelectedId('');
-      } else { const rotated = await rotateGrant(grant.id); setSelectedId(grant.id); setRevealed({ grantId: grant.id, token: rotated.token! }); }
+        setConfigSelections(current => ({ mcp: current.mcp === grant.id ? '' : current.mcp, 'mcp-local': current['mcp-local'] === grant.id ? '' : current['mcp-local'], api: current.api === grant.id ? '' : current.api }));
+        setGrantCache(current => { const next = { ...current }; delete next[grant.id]; return next; });
+      } else { const rotated = await rotateGrant(grant.id); setSelectedId(grant.id); setRevealed({ grantId: grant.id, token: rotated.token! }); setSessionTokens(current => ({ ...current, [grant.id]: rotated.token! })); }
       await refresh();
     } catch (reason) { setError(message(reason)); }
     finally { setBusy(false); }
@@ -140,36 +194,45 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
   }, [audit]);
   async function runTest() {
     if (!selected || !status || !token) return;
+    const normalizedToken = token.trim();
+    if (!normalizedToken.startsWith('mv_')) {
+      setConnectionError('请输入所选授权的外部访问凭证（以 mv_ 开头），而非 Vault 登录凭证。');
+      return;
+    }
     if (operation === 'read_memory_pack' && !window.confirm(t.consumeConfirm)) return;
     testRequest.current?.abort(); const controller = new AbortController(); testRequest.current = controller;
-    const serial = ++sequence.current; setBusy(true); setError(''); setResult(''); setConnectionError('');
+    const serial = ++sequence.current; setBusy(true); setError(''); setResult(null); setConnectionError('');
     const started = performance.now();
     try {
+      if (sessionTokens[selected.id] !== normalizedToken) {
+        const verification = await verifyGrantToken(selected.id, normalizedToken);
+        if (serial !== sequence.current) return;
+        if (!verification.matches) {
+          setConnectionError('凭证与所选授权不匹配，请使用该授权的外部访问凭证。');
+          return;
+        }
+        setSessionTokens(current => ({ ...current, [selected.id]: normalizedToken }));
+        setToken(normalizedToken);
+      }
       const body: Record<string, unknown> = selected.mode === 'approved_pack' ? { pack_id: selected.pack_id } : { project_ids: [project] };
       if (operation === 'search_memory' || operation === 'build_context') body.query = query;
       if (operation === 'get_memory' || operation === 'get_evidence') body.memory_id = memoryId;
       if (operation === 'get_evidence') body.evidence_id = evidenceId;
-      const response = await callGateway(status.gateway_url, token, operation, body, controller.signal);
+      const response = await callGateway(normalizedToken, operation, body, controller.signal);
       if (serial !== sequence.current) return;
-      setResult(JSON.stringify({ status: response.status, elapsed_ms: Math.round(performance.now() - started), receipt: response.receipt, result: response.result }, null, 2).slice(0, 20000));
-      if (response.status === 401 || response.status === 403) { setToken(''); setRevealed(null); }
-      if (operation === 'read_memory_pack' && response.ok) { setToken(''); setRevealed(null); }
+      setResult({ status: response.status, ok: response.ok, elapsed: Math.round(performance.now() - started), receipt: response.receipt, data: response.result });
       await refresh();
     } catch (reason) {
       if (serial === sequence.current && !controller.signal.aborted) {
-        setConnectionError(reason instanceof TypeError
-          ? t.gatewayFetchFailure(status.gateway_url)
-          : message(reason));
+        setConnectionError(message(reason));
       }
     }
     finally { if (serial === sequence.current) setBusy(false); }
   }
-  const mcpUrl = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
-    ? `http://${window.location.hostname}:8767/mcp`
-    : `${window.location.origin}/mcp`;
-  const template = selected && status ? (tab === 'mcp' ? JSON.stringify({ url: mcpUrl, transport: 'streamable-http', headers: { Authorization: 'Bearer <YOUR_TOKEN>' } }, null, 2) : tab === 'mcp-local' ? JSON.stringify({ mcpServers: { 'memo-vault': {
+  const mcpUrl = 'https://memo-vault-app-test-gpu.memolabs.net/mcp';
+  const template = configSelected && status ? (tab === 'mcp' ? JSON.stringify({ url: mcpUrl, transport: 'streamable-http', headers: { Authorization: 'Bearer <YOUR_TOKEN>' } }, null, 2) : tab === 'mcp-local' ? JSON.stringify({ mcpServers: { 'memo-vault': {
     command: 'everos', args: ['vault-mcp', '--gateway', status.gateway_url], env: { MEMO_VAULT_TOKEN: '<YOUR_TOKEN>' },
-  } } }, null, 2) : `curl -X POST '${status.gateway_url}/api/v1/external/${selected.mode === 'approved_pack' ? `packs/${selected.pack_id}/deliver` : 'context/build'}' \\\n  -H 'Authorization: Bearer <YOUR_TOKEN>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify(selected.mode === 'approved_pack' ? {} : { project_ids: selected.project_ids, query: '<KEYWORD>', token_budget: Math.min(4000, selected.token_budget) })}'`) : '';
+  } } }, null, 2) : `curl -X POST '${status.gateway_url}/api/v1/external/${configSelected.mode === 'approved_pack' ? `packs/${configSelected.pack_id}/deliver` : 'context/build'}' \\\n  -H 'Authorization: Bearer <YOUR_TOKEN>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify(configSelected.mode === 'approved_pack' ? {} : { project_ids: configSelected.project_ids, query: '<KEYWORD>', token_budget: Math.min(4000, configSelected.token_budget) })}'`) : '';
 
   return <section className="authorization-page">
     <div className="authorization-toolbar"><p>{t.intro}</p><div className="actions">
@@ -180,7 +243,6 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
       <button className="primary-button" disabled={busy} onClick={() => beginCreate()}>{t.newGrant}</button>
     </div></div>
     {error && <p className="error-banner" role="alert">{error}</p>}
-    {notice && <p role="status">{notice}</p>}
     <div className="grant-list-toolbar"><div className="actions" role="group" aria-label={t.status}>
       {(['all', 'active', 'history'] as const).map(bucket => <button key={bucket} className={grantBucket === bucket ? 'primary-button' : 'secondary-button'} aria-pressed={grantBucket === bucket} onClick={() => { setGrantBucket(bucket); setGrantOffset(0); void refresh(0, bucket); }}>{bucket === 'all' ? t.allGrants : bucket === 'active' ? t.activeGrants : t.historyGrants}</button>)}
     </div><span className="muted">{t.pageSummary(grantTotal ? grantOffset + 1 : 0, Math.min(grantOffset + grants.length, grantTotal), grantTotal)}</span></div>
@@ -203,27 +265,34 @@ export default function AuthorizationMcpPage({ projects, draft, onOpenPack, onDr
       {!grants.length && <tr><td colSpan={7}>{loading ? t.loading : t.empty}</td></tr>}
     </tbody></table><div className="grant-pagination"><button className="secondary-button" disabled={loading || grantOffset === 0} onClick={() => void refresh(Math.max(0, grantOffset - pageSize))}>{t.previousPage}</button><button className="secondary-button" disabled={loading || grantOffset + grants.length >= grantTotal} onClick={() => void refresh(grantOffset + pageSize)}>{t.nextPage}</button><button className="secondary-button" disabled={loading} onClick={() => void refresh()}>{t.refresh}</button></div></div>
 
-    {revealed?.grantId === selectedId && <div className="panel secret-reveal"><strong>{t.tokenOnce}</strong><code>{revealed.token}</code><div className="actions"><button className="secondary-button" onClick={() => void copy(revealed.token)}>{t.revealCopy}</button><button className="secondary-button" onClick={() => { setToken(revealed.token); setRevealed(null); }}>{t.connection}</button></div></div>}
+    {revealed?.grantId === selectedId && <div className="panel secret-reveal"><div><strong>授权凭证已生成</strong><code className="issued-token">{revealed.token}</code><small>凭证已加密保存，可在授权有效期内再次使用。</small></div><div className="actions"><button className="secondary-button" onClick={() => void copy(revealed.token)}>{t.revealCopy}</button><button className="secondary-button" onClick={() => { setToken(revealed.token); setRevealed(null); }}>{t.connection}</button></div></div>}
     <div className="authorization-cards">
       <section className="panel integration-panel"><div className="actions" role="tablist">
         <button role="tab" aria-selected={tab === 'mcp'} className={tab === 'mcp' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('mcp')}>{t.mcpConfig}</button>
         <button role="tab" aria-selected={tab === 'mcp-local'} className={tab === 'mcp-local' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('mcp-local')}>本地 STDIO</button>
         <button role="tab" aria-selected={tab === 'api'} className={tab === 'api' ? 'primary-button' : 'secondary-button'} onClick={() => setTab('api')}>{t.apiConfig}</button>
-      </div><label>{t.choose}<select value={selectedId} onChange={e => setSelectedId(e.target.value)}><option value="">—</option>{grants.map(g => <option key={g.id} value={g.id}>{g.subject} · {g.project_ids.join(', ')} · {g.id.slice(0,6)}</option>)}</select></label>
-        {template ? <pre tabIndex={0}>{template}</pre> : <p>{t.noSelection}</p>}
-        <button className="secondary-button" disabled={!template} onClick={() => void copy(template)}>{t.copy}</button><p className="muted">{t.templateHint}</p>{tab === 'mcp-local' && <p className="muted">{t.install}</p>}{tab === 'mcp' && <p className="muted">需部署远程 MCP 服务并配置 /mcp 代理；客户端须支持 Streamable HTTP 和 Bearer 请求头。</p>}
+      </div><label>{t.choose}<select value={configSelectedId} onChange={e => setConfigSelections(current => ({ ...current, [tab]: e.target.value }))}><option value="">—</option>{optionsFor(configSelectedId).map(g => <option key={g.id} value={g.id}>{g.subject}</option>)}</select></label>
+        {tab === 'mcp' ? <RemoteMcpGuide grant={configSelected} url={mcpUrl} revealedToken={sessionTokens[configSelectedId]} /> : <>
+          {template ? <pre tabIndex={0}>{template}</pre> : <p>{t.noSelection}</p>}
+          <button className="secondary-button" disabled={!template} onClick={() => void copy(template)}>{t.copy}</button><p className="muted">{t.templateHint}</p>{tab === 'mcp-local' && <p className="muted">{t.install}</p>}
+        </>}
       </section>
       <section className="panel connection-panel"><h2>{t.connection}</h2><p className="muted">{t.testHint}</p>
-        <label>{t.subject}<input value={selected?.subject ?? ''} readOnly /></label>
-        <label>{t.token}<input disabled={busy} type="password" value={token} autoComplete="off" placeholder="mv_…" onChange={e => { setToken(e.target.value); setResult(''); setConnectionError(''); }} /></label><small>{t.tokenHint}</small>
-        <label>{t.tool}<select aria-label={t.tool} disabled={busy} value={operation} onChange={e => { setOperation(e.target.value as GatewayOperation); setResult(''); setConnectionError(''); }}>{(selected?.operations ?? ['search_memory']).map(op => <option key={op} value={op}>{op === 'get_pack_info' ? t.checkingAccess : op === 'read_memory_pack' ? t.actualDelivery : op}</option>)}</select></label>
-        {selected?.mode === 'live_scope' && <label>{t.projects}<select aria-label={t.projects} disabled={busy} value={project} onChange={e => { setProject(e.target.value); setResult(''); setConnectionError(''); }}>{selected.project_ids.map(id => <option key={id}>{id}</option>)}</select></label>}
-        {['search_memory','build_context'].includes(operation) && <label>{t.query}<input disabled={busy} value={query} onChange={e => { setQuery(e.target.value); setResult(''); setConnectionError(''); }} /></label>}
-        {['get_memory','get_evidence'].includes(operation) && <label>{t.memory}<input disabled={busy} value={memoryId} onChange={e => { setMemoryId(e.target.value); setResult(''); setConnectionError(''); }} /></label>}
-        {operation === 'get_evidence' && <label>{t.evidence}<input disabled={busy} value={evidenceId} onChange={e => { setEvidenceId(e.target.value); setResult(''); setConnectionError(''); }} /></label>}
+        <label>{t.subject}<select value={selectedId} onChange={e => setSelectedId(e.target.value)}><option value="">—</option>{optionsFor(selectedId).map(g => <option key={g.id} value={g.id}>{g.subject}</option>)}</select></label>
+        <label>{t.token}<input key={selectedId} disabled={busy} type="password" value={token} autoComplete="new-password" placeholder="mv_…" onChange={e => { setToken(e.target.value); setResult(null); setConnectionError(''); }} onBlur={e => { const value = e.target.value.trim(); const id = selectedId; if (!id || !value || sessionTokens[id] === value) return; void verifyGrantToken(id, value).then(result => { if (result.matches && selectedIdRef.current === id && tokenRef.current.trim() === value) setSessionTokens(current => ({ ...current, [id]: value })); else if (!result.matches && selectedIdRef.current === id && tokenRef.current.trim() === value) setConnectionError('凭证与所选授权不匹配。'); }).catch(() => { if (selectedIdRef.current === id) setConnectionError('无法验证凭证，请检查 Vault 服务。'); }); }} /></label><small>{t.tokenHint}</small>
+        <label>{t.tool}<select aria-label={t.tool} disabled={busy} value={operation} onChange={e => { setOperation(e.target.value as GatewayOperation); setResult(null); setConnectionError(''); }}>{(selected?.operations ?? ['search_memory']).map(op => <option key={op} value={op}>{op === 'get_pack_info' ? t.checkingAccess : op === 'read_memory_pack' ? t.actualDelivery : op}</option>)}</select></label>
+        {selected?.mode === 'live_scope' && <label>{t.projects}<select aria-label={t.projects} disabled={busy} value={project} onChange={e => { setProject(e.target.value); setResult(null); setConnectionError(''); }}>{selected.project_ids.map(id => <option key={id} value={id}>{projects.find(p => p.project_id === id)?.full_path ?? id}</option>)}</select></label>}
+        {['search_memory','build_context'].includes(operation) && <label>{t.query}<input disabled={busy} value={query} onChange={e => { setQuery(e.target.value); setResult(null); setConnectionError(''); }} /></label>}
+        {['get_memory','get_evidence'].includes(operation) && <label>{t.memory}<input disabled={busy} value={memoryId} onChange={e => { setMemoryId(e.target.value); setResult(null); setConnectionError(''); }} /></label>}
+        {operation === 'get_evidence' && <label>{t.evidence}<input disabled={busy} value={evidenceId} onChange={e => { setEvidenceId(e.target.value); setResult(null); setConnectionError(''); }} /></label>}
         <button className="primary-button" disabled={busy || !selected || !token || !status || !status.gateway_online || status.paused || selected.status !== 'active' || (['search_memory','build_context'].includes(operation) && !query.trim()) || (['get_memory','get_evidence'].includes(operation) && !memoryId) || (operation === 'get_evidence' && !evidenceId)} onClick={() => void runTest()}>{t.run}</button>
-        {connectionError && <div className="connection-error" role="alert"><strong>{t.connectionFailed}</strong><p>{connectionError}</p></div>}
-        <p className="muted">{t.deniedHint}</p>{result && <><h3>{t.result}</h3><pre role="status">{result}</pre></>}
+        {connectionError && <div className="connection-error" role="alert"><strong>{connectionError.includes('凭证') ? '请检查授权凭证' : t.connectionFailed}</strong><p>{connectionError}</p></div>}
+        <p className="muted">{t.deniedHint}</p>{result && <div className={`connection-result ${result.ok ? 'is-success' : 'is-error'}`} role="status">
+          <div className="connection-result-heading"><strong>{result.ok ? '调用成功' : '调用未成功'}</strong><span>HTTP {result.status} · {result.elapsed} ms</span></div>
+          {!result.ok && <p>{result.status === 401 ? '网关未接受此凭证。请检查是否使用了此授权的外部访问凭证，以及网关和 Vault 是否连接同一数据目录。' : result.status === 403 ? '访问被拒绝。请检查授权状态、项目空间和操作权限。' : '请检查请求内容与服务状态，或展开详情查看响应。'}</p>}
+          {result.receipt && <small>调用回执：{result.receipt}</small>}
+          <details open={result.ok}><summary>查看返回内容</summary><pre>{JSON.stringify(result.data, null, 2).slice(0, 20000)}</pre></details>
+        </div>}
       </section>
     </div>
     {audit && <div className="modal-backdrop audit-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setAudit(null); }}><section className="panel grant-audit-dialog" role="dialog" aria-modal="true" aria-labelledby="audit-title">

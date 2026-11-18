@@ -42,6 +42,8 @@ export async function listGrants(bucket: 'all' | 'active' | 'history', limit: nu
   }
   throw new Error('授权列表响应格式无效，请刷新 Vault 服务后重试。');
 }
+export const getGrantCredential = (id: string) => request<{ token: string }>(`/grants/${encodeURIComponent(id)}/credential`, 'POST');
+export const verifyGrantToken = (id: string, token: string) => request<{ matches: boolean }>(`/grants/${encodeURIComponent(id)}/verify-token`, 'POST', { token });
 export const gatewayStatus = () => request<GatewayStatus>('/gateway/status');
 export const pauseGateway = (paused: boolean) => request<{ paused: boolean }>(`/gateway/${paused ? 'pause' : 'resume'}`, 'POST');
 export const createGrant = (body: GrantInput, requestKey: string) => request<Grant>('/grants', 'POST', body, requestKey);
@@ -50,15 +52,16 @@ export const deleteGrant = (id: string) => request(`/grants/${encodeURIComponent
 export const rotateGrant = (id: string) => request<Grant>(`/grants/${encodeURIComponent(id)}/rotate`, 'POST');
 export const getGrantAudit = (id: string) => request<AuditRow[]>(`/grants/${encodeURIComponent(id)}/audit`);
 export async function createPackDraft(body: PackExportRequest): Promise<FixedDraft> {
-  const result = await request<{ draft_id: string; included_count: number }>('/grants/pack-drafts', 'POST', body);
+  const result = await request<{ draft_id: string; included_count: number; project_ids: string[] }>('/grants/pack-drafts', 'POST', body);
   if (body.evidence_mode !== 'none' && body.evidence_mode !== 'id') throw new Error('Unsupported evidence mode');
-  return { ...result, project_ids: body.namespaces, kinds: body.kinds, token_budget: body.token_budget, evidence_mode: body.evidence_mode };
+  return { ...result, kinds: body.kinds, token_budget: body.token_budget, evidence_mode: body.evidence_mode };
 }
-export async function callGateway(url: string, token: string, operation: GatewayOperation, body: Record<string, unknown>, signal?: AbortSignal) {
-  const paths: Record<GatewayOperation, string> = { search_memory: '/memories/search', get_memory: '/memories/get', get_evidence: '/evidence/get', build_context: '/context/build', get_pack_info: `/packs/${encodeURIComponent(String(body.pack_id))}`, read_memory_pack: `/packs/${encodeURIComponent(String(body.pack_id))}/deliver` };
-  const isGet = operation === 'get_pack_info';
-  const response = await fetch(`${url}/api/v1/external${paths[operation]}`, { method: isGet ? 'GET' : 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'omit', signal, ...(isGet ? {} : { body: JSON.stringify(body) }) });
-  const raw = await response.text();
-  let result: unknown; try { result = JSON.parse(raw); } catch { result = raw; }
-  return { ok: response.ok, status: response.status, receipt: response.headers.get('X-Vault-Receipt'), result };
+export async function callGateway(token: string, operation: GatewayOperation, body: Record<string, unknown>, signal?: AbortSignal) {
+  const response = await ownerFetch('/api/v1/gateway/test', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+    body: JSON.stringify({ token, operation, body }),
+  });
+  const envelope = await response.json();
+  if (!response.ok) throw new Error(envelope?.detail?.message ?? envelope?.detail ?? `请求失败 (${response.status})`);
+  return envelope.data as { ok: boolean; status: number; receipt: string | null; result: unknown };
 }

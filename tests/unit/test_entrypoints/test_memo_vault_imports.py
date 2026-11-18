@@ -1269,6 +1269,7 @@ def test_candidate_review_lists_evidence_and_publishes_approved_content(
             assert candidate["id"] == "candidate-review-1"
             assert candidate["content"] == "I like tea."
             assert candidate["evidence"][0]["message_id"] == message_id
+            assert candidate["evidence"][0]["conversation_id"]
             assert "quote" not in candidate["evidence"][0]
             assert "source_content" not in candidate["evidence"][0]
             conversation = await client.get(
@@ -1831,4 +1832,42 @@ def test_split_episode_candidates_preserve_text_and_sources_in_vault(tmp_path, m
             with store.connect() as connection:
                 statuses = dict(connection.execute("SELECT id, status FROM candidates WHERE id IN ('split-1', 'split-2')").fetchall())
             assert statuses == {"split-1": "rejected", "split-2": "pending"}
+    asyncio.run(scenario())
+
+
+def test_missing_evidence_can_be_explicitly_confirmed_as_manual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEMO_VAULT_DATA_DIR", str(tmp_path / "vault"))
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post(
+                "/api/v1/imports/preview",
+                files={"file": ("chat.json", b'{"messages":[{"role":"user","content":"hello"}]}', "application/json")},
+            )
+            batch = await client.post("/api/v1/imports/commit", json={
+                "preview_id": preview.json()["data"]["preview_id"], "project_id": "personal",
+            })
+            with app.state.vault_store.connect() as connection:
+                connection.execute(
+                    "INSERT INTO candidates (id, batch_id, everos_scope, kind, content) VALUES (?, ?, ?, 'fact', ?)",
+                    ("missing-evidence", batch.json()["data"]["batch_id"], "scope", "A fact"),
+                )
+            class Publisher:
+                async def publish_approved(self, **kwargs):  # type: ignore[no-untyped-def]
+                    return EverOSMemoryRef(memory_id="manual-result", scope=kwargs["scope"], content=kwargs["content"], revision=1)
+            app.state.everos_adapter = Publisher()
+            body = {"revision": 1, "kind": "profile", "namespace": "personal", "content": "A fact", "evidence_kind": "human_verified"}
+            response = await client.post("/api/v1/candidates/missing-evidence/confirm", json=body)
+            assert response.status_code == 422
+            response = await client.post("/api/v1/candidates/missing-evidence/confirm", json={**body, "confirm_as_manual": True})
+            assert response.status_code == 200
+            with app.state.vault_store.connect() as connection:
+                candidate = connection.execute("SELECT origin, evidence_kind, status FROM candidates WHERE id = ?", ("missing-evidence",)).fetchone()
+                memory = connection.execute("SELECT origin, evidence_kind FROM memories WHERE id = ?", ("missing-evidence",)).fetchone()
+                assert tuple(candidate) == ("manual", "human_authored", "confirmed")
+                assert tuple(memory) == ("manual", "human_authored")
     asyncio.run(scenario())

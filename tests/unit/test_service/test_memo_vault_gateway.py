@@ -113,6 +113,25 @@ async def test_live_search_never_returns_ask_deny_or_hidden_counts(runtime):
 
 
 @pytest.mark.asyncio
+async def test_parent_search_includes_only_authorized_descendants(runtime):
+    _, service, records, grant = runtime
+    records.extend([
+        source("child", project_id="child", namespace="child"),
+        source("ungranted", project_id="other", namespace="other"),
+        source("child-ask", project_id="child", namespace="child", external_use="ask"),
+    ])
+    service.expand_search_scope = lambda scope, authorized: [
+        item for item in ["personal", "child", "other"]
+        if item in authorized and "personal" in scope
+    ]
+    grant.update(project_ids=["personal", "child"], kinds=["fact"])
+    result, _, _ = await service._execute(grant, "search_memory", {"project_ids": ["personal"], "query": "Python"})
+    assert {item["memory_id"] for item in result["memories"]} == {"visible", "child"}
+    detail, _, _ = await service._execute(grant, "get_memory", {"project_ids": ["personal"], "memory_id": "child"})
+    assert detail["memory_id"] == "child"
+
+
+@pytest.mark.asyncio
 async def test_subject_cannot_expand_scope_or_read_ask(runtime):
     _, service, _, grant = runtime
     for operation, body in [
@@ -368,3 +387,17 @@ async def test_stale_pack_cannot_reactivate_when_source_recovers(runtime):
 
     with pytest.raises(RepositoryDeniedError):
         repo.rotate(grant["id"])
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_search_preserves_authorization(runtime):
+    _, service, records, grant = runtime
+    records[0] = records[0].model_copy(update={"content": "用户喜欢周末攀岩。"})
+    records[1] = records[1].model_copy(update={"content": "用户喜欢游泳。"})
+    result = await service.call(
+        grant["token"], "search_memory",
+        {"project_ids": ["personal"], "query": "用户喜欢什么运动，攀岩还是游泳"},
+    )
+    assert [item["memory_id"] for item in result["data"]["memories"]] == ["visible"]
+    assert result["data"]["search_mode"] == "keyword_fuzzy"
+    assert "游泳" not in json.dumps(result, ensure_ascii=False)

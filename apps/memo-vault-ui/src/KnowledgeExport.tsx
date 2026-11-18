@@ -104,7 +104,7 @@ export default function KnowledgeExport({ projects }: { projects: ProjectSpace[]
   return <section className="knowledge-export">
     <div className="card-heading"><div><h2>Knowledge 文档</h2><p className="subtle">按项目选择已进入 Knowledge 的原始文件。Vault 中仅归档的文件不会混入下载。</p></div></div>
     <div className="knowledge-filters">
-      <label>项目空间<select value={projectId} onChange={event => changeProject(event.target.value)}>{projects.map(item => <option key={item.project_id} value={item.project_id}>{item.name} · {item.project_id}</option>)}</select></label>
+      <label>项目空间<select value={projectId} onChange={event => changeProject(event.target.value)}>{projects.map(item => <option key={item.project_id} value={item.project_id}>{item.full_path}</option>)}</select></label>
       <label>分类<input value={category} onChange={event => changeFilter(setCategory, event.target.value)} placeholder="全部分类" /></label>
       <label>来源<input value={sourceType} onChange={event => changeFilter(setSourceType, event.target.value)} placeholder="例如 claude" /></label>
       <label>文件类型<input value={fileType} onChange={event => changeFilter(setFileType, event.target.value)} placeholder="例如 pdf" /></label>

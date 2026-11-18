@@ -1,3 +1,5 @@
+import { ReviewPending } from "./reviewPending";
+import { projectSubtree, subtreeCount } from "./projectTree";
 import AgentChatPage from "./AgentChatPage";
 import AuthorizationMcpPage from "./AuthorizationMcpPage";
 import { createPackDraft, type FixedDraft } from "./gatewayApi";
@@ -381,7 +383,7 @@ function MemoryPackPage({
           {projects.length === 0 ? projectLoadError ? <div className="notice error" role="alert">{projectLoadError}<button className="secondary-button pack-retry" onClick={onRetryProjects}>重试读取项目空间</button></div> : <p className="subtle">正在读取可用项目空间…</p> : projects.map((project) => (
             <label className="pack-project-option" key={project.project_id}>
               <input type="checkbox" checked={selectedProjects?.includes(project.project_id) ?? false} onChange={(event) => toggleProject(project.project_id, event.target.checked)} />
-              <span><strong>{project.name}</strong><small>{project.full_path} · {project.project_id}</small></span>
+              <span><strong>{project.name}</strong><small>{project.full_path}</small></span>
             </label>
           ))}
         </section>
@@ -479,7 +481,12 @@ export default function App() {
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [showFullConversation, setShowFullConversation] = useState(false);
   const [candidateDrafts, setCandidateDrafts] = useState<Record<string, CandidateChanges>>({});
-  const [candidateBusy, setCandidateBusy] = useState<string | null>(null);
+  const pendingReviews = useRef(new ReviewPending());
+  const [busyCandidates, setBusyCandidates] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const candidateRequestSequence = useRef(0);
+  const candidateFilters = useRef({ status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter });
+  candidateFilters.current = { status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter };
   const [candidateError, setCandidateError] = useState<string | null>(null);
   const [candidateNotice, setCandidateNotice] = useState<string | null>(null);
   const [showManualCandidateForm, setShowManualCandidateForm] = useState(false);
@@ -589,16 +596,17 @@ export default function App() {
   useEffect(() => {
     if (pageId !== "review") return;
     let active = true;
+    const sequence = ++candidateRequestSequence.current;
     setCandidateError(null);
     getCandidates({ status: candidateStatusFilter, kind: candidateKindFilter || undefined, origin: candidateOriginFilter || undefined, evidence: candidateEvidenceFilter || undefined })
       .then((items) => {
-        if (!active) return;
+        if (!active || sequence !== candidateRequestSequence.current) return;
         setCandidates(items);
         setCheckedCandidates((current) => current.filter((id) => items.some((item) => item.id === id && item.status === "pending" && canConfirmCandidate(item))));
         setSelectedCandidateId((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? null);
       })
       .catch((reason: unknown) => {
-        if (active) setCandidateError(reason instanceof Error ? reason.message : "无法读取候选内容。");
+        if (active && sequence === candidateRequestSequence.current) setCandidateError(reason instanceof Error ? reason.message : "无法读取候选内容。");
       });
     return () => { active = false; };
   }, [pageId, candidateStatusFilter, candidateKindFilter, candidateOriginFilter, candidateEvidenceFilter]);
@@ -627,7 +635,7 @@ export default function App() {
     let active = true;
     const selectedProjects = libraryProjectId === "all"
       ? projects
-      : projects.filter((item) => item.project_id === libraryProjectId);
+      : projectSubtree(projects, libraryProjectId);
     setLibraryLoading(true);
     setLibraryError(null);
     if (!selectedProjects.length) {
@@ -663,7 +671,10 @@ export default function App() {
   }, [librarySelected]);
 
   async function refreshCandidates() {
-    const items = await getCandidates({ status: candidateStatusFilter, kind: candidateKindFilter || undefined, origin: candidateOriginFilter || undefined, evidence: candidateEvidenceFilter || undefined });
+    const sequence = ++candidateRequestSequence.current;
+    const filters = candidateFilters.current;
+    const items = await getCandidates({ status: filters.status, kind: filters.kind || undefined, origin: filters.origin || undefined, evidence: filters.evidence || undefined });
+    if (sequence !== candidateRequestSequence.current) return;
     setCandidates(items);
     setCheckedCandidates((current) => current.filter((id) => items.some((item) => item.id === id && item.status === "pending" && canConfirmCandidate(item))));
     setSelectedCandidateId((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? null);
@@ -726,6 +737,7 @@ export default function App() {
   const eligibleCandidates = candidates.filter((candidate) => {
     const kind = candidateChanges(candidate).kind;
     return candidate.status === "pending"
+      && !busyCandidates.has(candidate.id)
       && canConfirmCandidate(candidate)
       && (kind === "episode" || kind === "preference" || kind === "profile");
   });
@@ -789,49 +801,59 @@ export default function App() {
     setLibraryReload((current) => current + 1);
   }
 
+  function syncBusyCandidates() {
+    setBusyCandidates(pendingReviews.current.snapshot());
+  }
+
   async function confirmSelected() {
-    if (candidateBusy || checkedCandidates.length === 0) return;
-    setCandidateBusy("bulk");
+    if (bulkBusy) return;
+    const selected = eligibleCandidates.filter((item) => checkedCandidates.includes(item.id) && pendingReviews.current.start(item.id));
+    if (!selected.length) return;
+    syncBusyCandidates();
+    setBulkBusy(true);
     setCandidateError(null);
     setCandidateNotice(null);
     let confirmed = 0;
     const completedIds: string[] = [];
     try {
-      for (const candidate of eligibleCandidates.filter((item) => checkedCandidates.includes(item.id))) {
+      for (const candidate of selected) {
         await confirmCandidate(candidate, candidateChanges(candidate));
         confirmed += 1;
         completedIds.push(candidate.id);
       }
-      setCheckedCandidates([]);
-      setCandidateNotice(`已确认 ${confirmed} 条候选并写入 EverOS 正式记忆。`);
+      setCandidateNotice(`已确认 ${confirmed} 条候选并写入正式记忆。`);
     } catch (reason) {
       setCandidateError(`已确认 ${confirmed} 条；剩余候选未完成：${reason instanceof Error ? reason.message : "审核失败"}`);
-      setCheckedCandidates((current) => current.filter((id) => !completedIds.includes(id)));
     } finally {
-      setCandidateBusy(null);
-      await refreshCandidates();
+      setCheckedCandidates((current) => current.filter((id) => !completedIds.includes(id)));
+      try { await refreshCandidates(); }
+      catch (reason) { setCandidateError(reason instanceof Error ? reason.message : "无法刷新候选内容。"); }
+      for (const candidate of selected) pendingReviews.current.finish(candidate.id);
+      syncBusyCandidates();
+      setBulkBusy(false);
     }
   }
 
   async function reviewCandidate(candidate: ReviewCandidate, action: "confirm" | "reject") {
-    if (candidateBusy) return;
-    setCandidateBusy(candidate.id);
+    if (!pendingReviews.current.start(candidate.id)) return;
+    syncBusyCandidates();
     setCandidateError(null);
     setCandidateNotice(null);
     try {
       if (action === "confirm") {
-        const draft = candidateChanges(candidate);
-        await confirmCandidate(candidate, draft);
-        setCandidateNotice("候选已确认并写入 EverOS 正式记忆。");
+        await confirmCandidate(candidate, candidateChanges(candidate), !canConfirmCandidate(candidate));
+        setCandidateNotice("候选已确认并写入正式记忆。");
       } else {
         await rejectCandidate(candidate);
         setCandidateNotice("候选已拒绝，未写入正式记忆。");
       }
-      await refreshCandidates();
+      try { await refreshCandidates(); }
+      catch { setCandidateError("审核已完成，但候选列表刷新失败，请刷新页面查看最新状态。"); }
     } catch (reason) {
       setCandidateError(reason instanceof Error ? reason.message : "审核操作失败。");
     } finally {
-      setCandidateBusy(null);
+      pendingReviews.current.finish(candidate.id);
+      syncBusyCandidates();
     }
   }
 
@@ -1086,13 +1108,14 @@ export default function App() {
           </div>
         </header>
 
+        <div hidden={pageId !== "authorization"}>
+          <AuthorizationMcpPage projects={projects} draft={authorizationDraft} onOpenPack={() => setPageId("pack")} onDraftUsed={() => setAuthorizationDraft(null)} />
+        </div>
         {pageId === "agent-chat" ? (
           <AgentChatPage projects={projects} />
         ) : pageId === "adp" ? (
           <AdpExport />
-        ) : pageId === "authorization" ? (
-          <AuthorizationMcpPage projects={projects} draft={authorizationDraft} onOpenPack={() => setPageId("pack")} onDraftUsed={() => setAuthorizationDraft(null)} />
-        ) : pageId === "pack" ? (
+        ) : pageId === "authorization" ? null : pageId === "pack" ? (
           <div className="export-center"><nav className="export-tabs" aria-label="导出类型"><button className={exportTab === 'memory' ? 'selected' : ''} onClick={() => setExportTab('memory')}>Memory Pack</button><button className={exportTab === 'knowledge' ? 'selected' : ''} onClick={() => setExportTab('knowledge')}>Knowledge 文档</button></nav>
             {exportTab === 'memory' ? <MemoryPackPage projects={projects} projectLoadError={projectLoadError} onRetryProjects={retryProjects} onAuthorize={draft => { setAuthorizationDraft(draft); setPageId("authorization"); }} /> : <KnowledgeExport projects={projects} />}
           </div>
@@ -1105,9 +1128,9 @@ export default function App() {
                 {allSyncing > 0 ? <small>{allSyncing} 条同步中</small> : null}
               </button>
               {projects.map((project) => {
-                const count = libraryCounts.find((item) => item.project_id === project.project_id);
-                return <button className={`library-project-button ${libraryProjectId === project.project_id ? "selected" : ""}`} key={project.project_id} onClick={() => { setLibraryProjectId(project.project_id); closeLibraryDetail(); }}>
-                  <span title={`${project.full_path}${project.description ? `\n${project.description}` : ""}`} style={{ paddingLeft: `${Math.min(project.depth, 6) * 14}px` }}>{project.name}</span><strong>{librarySummaryLoading ? "…" : count?.visible_valid_count ?? 0}</strong>
+                const count = subtreeCount(projects, libraryCounts, project.project_id);
+                return <button className={`library-project-button ${libraryProjectId === project.project_id ? "selected" : ""}`} key={project.project_id} style={{ marginLeft: `${Math.min(project.depth, 6) * 14}px` }} onClick={() => { setLibraryProjectId(project.project_id); closeLibraryDetail(); }}>
+                  <span title={`${project.full_path}${project.description ? `\n${project.description}` : ""}`}>{project.name}</span><strong>{librarySummaryLoading ? "…" : count?.visible_valid_count ?? 0}</strong>
                   {count?.syncing_count ? <small>{count.syncing_count} 条同步中</small> : null}
                 </button>;
               })}
@@ -1172,8 +1195,8 @@ export default function App() {
             {candidateError ? <div className="notice error" role="alert">{candidateError}</div> : null}
             {candidateNotice ? <div className="notice success">{candidateNotice}</div> : null}
             <div className="review-bulkbar">
-              <label><input type="checkbox" checked={eligibleCandidates.length > 0 && eligibleCandidates.every((item) => checkedCandidates.includes(item.id))} disabled={candidateBusy !== null || eligibleCandidates.length === 0} onChange={(event) => setCheckedCandidates(event.target.checked ? eligibleCandidates.map((item) => item.id) : [])} /> 全选可确认的待审核候选</label>
-              <button className="primary-button" disabled={candidateBusy !== null || checkedCandidates.length === 0} onClick={() => void confirmSelected()}>{candidateBusy === "bulk" ? "批量审核中…" : `批量审核通过 (${checkedCandidates.length})`}</button>
+              <label><input type="checkbox" checked={eligibleCandidates.length > 0 && eligibleCandidates.every((item) => checkedCandidates.includes(item.id))} disabled={eligibleCandidates.length === 0} onChange={(event) => setCheckedCandidates(event.target.checked ? eligibleCandidates.map((item) => item.id) : [])} /> 全选可确认的待审核候选</label>
+              <button className="primary-button" disabled={bulkBusy || !checkedCandidates.some((id) => eligibleCandidates.some((candidate) => candidate.id === id))} onClick={() => void confirmSelected()}>{bulkBusy ? "批量审核中…" : `批量审核通过 (${checkedCandidates.length})`}</button>
             </div>
             <div className="review-layout">
               <div className="candidate-list">
@@ -1186,12 +1209,13 @@ export default function App() {
                   const originLabel = candidate.metadata?.origin_kind === "platform_summary" ? "Claude platform summary" : candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
                   return <article className={`candidate-card ${candidate.id === selectedCandidateId ? "selected" : ""}`} key={candidate.id} onClick={() => setSelectedCandidateId(candidate.id)}>
                     <div className="candidate-heading">
-                      <label className="candidate-check"><input type="checkbox" aria-label={`选择候选 ${candidate.id}`} disabled={candidateBusy !== null || candidate.status !== "pending" || !confirmable || !supportedKind} checked={checkedCandidates.includes(candidate.id)} onChange={(event) => setCheckedCandidates((current) => event.target.checked ? [...current, candidate.id] : current.filter((id) => id !== candidate.id))} /></label>
-                      <button className="candidate-select" aria-pressed={candidate.id === selectedCandidateId} onClick={() => setSelectedCandidateId(candidate.id)}><strong className="candidate-preview">{candidate.content}</strong><span>{candidate.filename} · {candidate.namespace}</span></button>
+                      <label className="candidate-check"><input type="checkbox" aria-label={`选择候选 ${candidate.id}`} disabled={busyCandidates.has(candidate.id) || candidate.status !== "pending" || !confirmable || !supportedKind} checked={checkedCandidates.includes(candidate.id)} onChange={(event) => setCheckedCandidates((current) => event.target.checked ? [...current, candidate.id] : current.filter((id) => id !== candidate.id))} /></label>
+                      <button className="candidate-select" aria-pressed={candidate.id === selectedCandidateId} onClick={() => setSelectedCandidateId(candidate.id)}><strong className="candidate-preview">{candidate.content}</strong><span>{projectName(candidate.namespace)}</span></button>
                       <span className={`candidate-status ${candidate.status}`}>{candidate.status === "pending" ? "待审核" : candidate.status === "confirmed" ? "已确认" : candidate.status === "rejected" ? "已拒绝" : "发布中"}</span>
                     </div>
-                    <div className="candidate-meta">{candidate.kind === "episode" || candidate.kind === "preference" || candidate.kind === "profile" ? <span className={`kind-chip kind-${candidate.kind}`}>{candidate.kind !== "episode" ? "画像" : "情节"}</span> : null}<span>{originLabel}</span>{candidate.origin !== "manual" ? <span className={validEvidence ? "evidence-valid" : "evidence-invalid"}>{validEvidence ? (candidate.origin === "import" ? "有原文件来源" : "有消息来源") : "缺少有效来源"}</span> : null}</div>
-                    {candidate.status === "pending" ? <div className="candidate-actions candidate-card-actions"><button className="primary-button" disabled={candidateBusy !== null || !draft.content.trim() || !confirmable || !supportedKind} onClick={() => void reviewCandidate(candidate, "confirm")}>确认</button><button className="secondary-button danger-button" disabled={candidateBusy !== null} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
+                    {!supportedKind && candidate.status === "pending" ? <p className="subtle">请在候选详情中选择记忆类型后确认。</p> : null}
+                    <div className="candidate-meta">{candidate.kind === "episode" || candidate.kind === "preference" || candidate.kind === "profile" ? <span className={`kind-chip kind-${candidate.kind}`}>{candidate.kind !== "episode" ? "画像" : "情节"}</span> : null}<span>{originLabel}</span><span>对外使用：{externalUseLabel(draft.external_use)}</span>{candidate.origin !== "manual" ? <span className={validEvidence ? "evidence-valid" : "evidence-invalid"}>{validEvidence ? (candidate.origin === "import" ? "有原文件来源" : "有消息来源") : "缺少有效来源"}</span> : null}</div>
+                    {candidate.status === "pending" ? <div className="candidate-actions candidate-card-actions"><button className="primary-button" disabled={busyCandidates.has(candidate.id) || !draft.content.trim() || !supportedKind} onClick={() => void reviewCandidate(candidate, "confirm")}>{confirmable ? "确认" : "标记为人工新增并确认"}</button><button className="secondary-button danger-button" disabled={busyCandidates.has(candidate.id)} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
                   </article>;
                 })}
               </div>
@@ -1205,27 +1229,27 @@ export default function App() {
                   const originLabel = candidate.metadata?.origin_kind === "platform_summary" ? "Claude platform summary" : candidate.origin === "import" ? "导入抽取" : candidate.origin === "agent" ? "Agent 提交" : "人工新增";
                   return <>
                     <h2>候选详情</h2>
-                    <p className="evidence-source">{originLabel} · {candidate.namespace}{candidate.origin === "manual" ? ` · 创建于 ${formatDateTime(candidate.created_at)}` : ` · ${candidate.filename}`}<br /><code>{candidate.id}</code></p>
+                    <p className="evidence-source">{originLabel} · {projectName(candidate.namespace)}{candidate.origin === "manual" ? ` · 创建于 ${formatDateTime(candidate.created_at)}` : ` · ${candidate.filename}`}<br /><code>{candidate.id}</code></p>
                     <div className="candidate-editor">
-                      <label>候选记忆内容<textarea className="candidate-full-content" disabled={candidate.status !== "pending"} rows={6} value={draft.content} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, content: event.target.value } }))} /></label>
-                      <p className={validEvidence || candidate.origin === "manual" ? "subtle" : "notice error"}>{candidate.origin === "manual" ? "由人工填写，不关联原文件或对话；确认后将以“人工新增”标记写入记忆库。" : validEvidence ? (candidate.origin === "import" ? "导入原文件已归档；系统未自动核验候选内容与原文是否一致，请人工核对。" : "已关联归档来源；请核实候选内容。") : (candidate.origin === "import" ? "找不到导入原文件，暂不能确认来源或入库。" : "候选内容未能由关联来源验证。可改写后逐条提交，服务端会重新检查；不可批量通过。")}</p>
+                      <label>候选记忆内容<textarea className="candidate-full-content" disabled={candidate.status !== "pending" || busyCandidates.has(candidate.id)} rows={6} value={draft.content} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, content: event.target.value } }))} /></label>
+                      <p className={validEvidence || candidate.origin === "manual" ? "subtle" : "notice error"}>{candidate.origin === "manual" ? "由人工填写，不关联原文件或对话；确认后将以“人工新增”标记写入记忆库。" : validEvidence ? (candidate.origin === "import" ? "导入原文件已归档；系统未自动核验候选内容与原文是否一致，请人工核对。" : "已关联归档来源；请核实候选内容。") : (candidate.origin === "import" ? "未找到有效来源；可核实内容后标记为人工新增并确认。" : "候选内容未能由关联来源验证；可核实内容后标记为人工新增并确认。")}</p>
                       <div className="candidate-setting-grid">
-                        <label>记忆类型{candidate.memory_type !== "atomic_fact" ? <span className="read-only-value">{candidate.kind === "episode" ? "情节" : "画像"}</span> : <select disabled={candidate.status !== "pending"} value={draft.kind === "preference" || draft.kind === "profile" ? "profile" : ""} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, kind: event.target.value as CandidateKind } }))}><option value="" disabled>请选择类型</option><option value="profile">画像</option></select>}</label>
-                        <label>命名空间<select disabled={candidate.status !== "pending"} value={draft.namespace} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, namespace: event.target.value } }))}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name} ({project.project_id})</option>)}</select></label>
-                        <label>有效期<select disabled={candidate.status !== "pending"} value={draft.validity_days ?? "long"} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, validity_days: event.target.value === "long" ? null : Number(event.target.value) as 30 | 90 } }))}><option value="long">长期</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label>
-                        <label>对外使用<select disabled={candidate.status !== "pending"} value={draft.external_use} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, external_use: event.target.value as CandidateChanges["external_use"] } }))}><option value="ask">导出时确认</option><option value="allow">允许外发</option><option value="deny">不可外发</option></select></label>
+                        <label>记忆类型{candidate.memory_type !== "atomic_fact" ? <span className="read-only-value">{candidate.kind === "episode" ? "情节" : "画像"}</span> : <select disabled={candidate.status !== "pending" || busyCandidates.has(candidate.id)} value={draft.kind === "preference" || draft.kind === "profile" ? "profile" : ""} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, kind: event.target.value as CandidateKind } }))}><option value="" disabled>请选择类型</option><option value="profile">画像</option></select>}</label>
+                        <label>命名空间<select disabled={candidate.status !== "pending" || busyCandidates.has(candidate.id)} value={draft.namespace} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, namespace: event.target.value } }))}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.full_path}</option>)}</select></label>
+                        <label>有效期<select disabled={candidate.status !== "pending" || busyCandidates.has(candidate.id)} value={draft.validity_days ?? "long"} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, validity_days: event.target.value === "long" ? null : Number(event.target.value) as 30 | 90 } }))}><option value="long">长期</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label>
+                        <label>对外使用<select disabled={candidate.status !== "pending" || busyCandidates.has(candidate.id)} value={draft.external_use} onChange={(event) => setCandidateDrafts((current) => ({ ...current, [candidate.id]: { ...draft, external_use: event.target.value as CandidateChanges["external_use"] } }))}><option value="ask">导出时确认</option><option value="allow">允许外发</option><option value="deny">不可外发</option></select></label>
                       </div>
                       {typeof candidate.metadata?.part_index === "number" && typeof candidate.metadata?.part_count === "number" ? <div className="notice">同一情节的第 {candidate.metadata.part_index} / {candidate.metadata.part_count} 部分；各部分独立审核，共同关联原情节来源。</div> : null}
                       {candidate.metadata?.output_language_not_chinese === true ? <div className="notice warning">候选标题或正文未检测到中文（专有名词等也可能触发）；请核对语义和原文后再确认。</div> : null}
                       {candidate.metadata?.output_truncated === true ? <div className="notice warning">候选内容因长度限制被截断；请核对原文并编辑后再确认。</div> : null}
-                      {candidate.status === "pending" ? <div className="candidate-actions"><button className="primary-button" disabled={candidateBusy !== null || !draft.content.trim() || !supportedKind || (!confirmable && draft.content.trim() === candidate.content.trim())} onClick={() => void reviewCandidate(candidate, "confirm")}>{candidateBusy === candidate.id ? "处理中…" : "确认入库"}</button><button className="secondary-button danger-button" disabled={candidateBusy !== null} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
+                      {candidate.status === "pending" ? <div className="candidate-actions"><button className="primary-button" disabled={busyCandidates.has(candidate.id) || !draft.content.trim() || !supportedKind } onClick={() => void reviewCandidate(candidate, "confirm")}>{busyCandidates.has(candidate.id) ? "处理中…" : confirmable ? "确认入库" : "标记为人工新增并确认"}</button><button className="secondary-button danger-button" disabled={busyCandidates.has(candidate.id)} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
                     </div>
-                    <div className="source-links"><h3>来源证据</h3>{candidate.evidence.length ? candidate.evidence.map((item) => <div className="source-link" key={item.message_id}><span>{item.role} · {formatTime(item.timestamp_ms)} · {item.message_id.slice(0, 12)}</span><button className="secondary-button" onClick={() => void openSource(candidate.id, item.message_id, draft.content)}>打开原对话</button></div>) : <p className="subtle">{candidate.origin === "manual" ? "人工新增，没有原文件来源。" : "没有可定位的归档消息。"}</p>}</div>
+                    <div className="source-links"><h3>来源证据</h3>{candidate.evidence.length ? candidate.evidence.filter((item, index, items) => items.findIndex((other) => item.conversation_id ? other.conversation_id === item.conversation_id : other.message_id === item.message_id) === index).map((item, index, items) => <div className="source-link" key={item.message_id}>{items.length > 1 ? <span>来源会话 {index + 1}</span> : null}<button className="secondary-button" onClick={() => void openSource(candidate.id, item.message_id, draft.content)}>打开原对话</button></div>) : <p className="subtle">{candidate.origin === "manual" ? "人工新增，没有原文件来源。" : "没有可定位的归档消息。"}</p>}</div>
                   </>;
                 })() : <p className="subtle">选择左侧候选查看详情与来源。</p>}
               </aside>
             </div>
-            {showManualCandidateForm ? <div className="memory-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !manualCandidateBusy) setShowManualCandidateForm(false); }}><section className="memory-editor-modal manual-candidate-modal" role="dialog" aria-modal="true" aria-label="人工新增记忆"><h2>人工新增记忆</h2><p className="subtle">保存后会先进入待审核列表，不会立即写入正式记忆。</p><label>记忆类型<select value={manualCandidateDraft.kind} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, kind: event.target.value as ManualCandidateInput["kind"] }))}><option value="episode">情节</option><option value="profile">画像</option></select></label><label>命名空间（项目空间）<select value={manualCandidateDraft.namespace} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, namespace: event.target.value }))}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}（{project.project_id}）</option>)}</select></label><div className="manual-candidate-setting-grid"><label>有效期<select value={manualCandidateDraft.validity_days ?? "long"} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, validity_days: event.target.value === "long" ? null : Number(event.target.value) as 30 | 90 }))}><option value="long">长期</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label><label>对外使用<select value={manualCandidateDraft.external_use} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, external_use: event.target.value as ManualCandidateInput["external_use"] }))}><option value="ask">导出时确认</option><option value="allow">允许外发</option><option value="deny">不可外发</option></select></label></div><label>记忆内容<textarea rows={7} value={manualCandidateDraft.content} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, content: event.target.value }))} maxLength={4000} placeholder="写下希望保存为长期记忆的内容" /></label>{manualCandidateError ? <p className="notice error" role="alert">{manualCandidateError}</p> : null}{projectLoadError ? <p className="notice error">项目空间读取失败：{projectLoadError}</p> : null}<div className="actions right"><button className="secondary-button" disabled={manualCandidateBusy} onClick={() => setShowManualCandidateForm(false)}>取消</button><button className="primary-button" disabled={manualCandidateBusy || !projects.length || !manualCandidateDraft.content.trim()} onClick={() => void saveManualCandidate()}>{manualCandidateBusy ? "保存中…" : "加入候选审核"}</button></div></section></div> : null}
+            {showManualCandidateForm ? <div className="memory-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !manualCandidateBusy) setShowManualCandidateForm(false); }}><section className="memory-editor-modal manual-candidate-modal" role="dialog" aria-modal="true" aria-label="人工新增记忆"><h2>人工新增记忆</h2><p className="subtle">保存后会先进入待审核列表，不会立即写入正式记忆。</p><label>记忆类型<select value={manualCandidateDraft.kind} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, kind: event.target.value as ManualCandidateInput["kind"] }))}><option value="episode">情节</option><option value="profile">画像</option></select></label><label>命名空间（项目空间）<select value={manualCandidateDraft.namespace} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, namespace: event.target.value }))}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.full_path}</option>)}</select></label><div className="manual-candidate-setting-grid"><label>有效期<select value={manualCandidateDraft.validity_days ?? "long"} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, validity_days: event.target.value === "long" ? null : Number(event.target.value) as 30 | 90 }))}><option value="long">长期</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label><label>对外使用<select value={manualCandidateDraft.external_use} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, external_use: event.target.value as ManualCandidateInput["external_use"] }))}><option value="ask">导出时确认</option><option value="allow">允许外发</option><option value="deny">不可外发</option></select></label></div><label>记忆内容<textarea rows={7} value={manualCandidateDraft.content} onChange={(event) => setManualCandidateDraft((current) => ({ ...current, content: event.target.value }))} maxLength={4000} placeholder="写下希望保存为长期记忆的内容" /></label>{manualCandidateError ? <p className="notice error" role="alert">{manualCandidateError}</p> : null}{projectLoadError ? <p className="notice error">项目空间读取失败：{projectLoadError}</p> : null}<div className="actions right"><button className="secondary-button" disabled={manualCandidateBusy} onClick={() => setShowManualCandidateForm(false)}>取消</button><button className="primary-button" disabled={manualCandidateBusy || !projects.length || !manualCandidateDraft.content.trim()} onClick={() => void saveManualCandidate()}>{manualCandidateBusy ? "保存中…" : "加入候选审核"}</button></div></section></div> : null}
             {sourceOpen ? <div className="source-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setSourceOpen(false); }}><section className="source-dialog" role="dialog" aria-modal="true" aria-label="原始会话"><div className="source-dialog-header"><div><h2>来源证据</h2><span>{sourceConversation?.filename ?? "读取中"}</span></div><button className="secondary-button" onClick={() => setSourceOpen(false)}>关闭</button></div>{sourceLoading ? <p>正在读取归档会话…</p> : null}{sourceError ? <p className="notice error" role="alert">{sourceError}</p> : null}{sourceConversation ? <><div className="source-segment"><div className="segment-status"><strong>MemCell 来源片段</strong><span>{sourceConversation.source_segment?.precision === "exact_input" ? "精确输入片段" : "关联消息（无精确字符范围）"} · {sourceConversation.source_segment?.messages.length ?? 0} 条消息</span><span className={sourceConversation.source_segment?.archive_available ? "evidence-valid" : "evidence-invalid"}>{archiveStatusLabel(sourceConversation.source_segment?.archive_status)}</span>{segmentStatusLabel(sourceConversation.source_segment?.segment_status) ? <span className="evidence-invalid">{segmentStatusLabel(sourceConversation.source_segment?.segment_status)}</span> : null}<span>{sourceConversation.source_segment?.key_position_status === "located" ? "已定位关键原文" : "未定位关键句，可阅读本片段"}</span></div>{sourceConversation.source_segment?.messages.map((item, index) => <article className={`source-message ${item.message_id === sourceConversation.selected_message_id ? "selected" : ""}`} key={`${item.message_id}:${item.source_char_start}:${index}`}><div><strong>{item.role}</strong><span>{formatTime(item.timestamp_ms)} · #{item.ordinal + 1} · 消息内字符 {item.source_char_start + 1}–{item.source_char_end}</span>{item.message_id === sourceConversation.selected_message_id ? <em>所选来源</em> : null}</div><pre>{highlightSourceSpan(item.content, item.key_position)}</pre>{!item.key_position ? <small>此消息未定位到可信的关键句。</small> : null}</article>)}{!sourceConversation.source_segment?.messages.length ? <p className="subtle">没有可恢复的来源消息。</p> : null}<button className="secondary-button source-full-toggle" onClick={() => setShowFullConversation(true)}>查看完整归档聊天并定位所选消息</button></div>{showFullConversation ? <div className="source-full-conversation"><h3>完整归档聊天</h3><div className="source-messages">{sourceConversation.messages.map((message) => { const sourceItem = sourceConversation.source_segment?.messages.find((item) => item.message_id === message.id && item.key_position); return <article className={`source-message ${message.id === sourceConversation.selected_message_id ? "selected" : ""}`} key={message.id} ref={(node) => { if (message.id === sourceConversation.selected_message_id) selectedSourceMessage.current = node; }}><div><strong>{message.role}</strong><span>{formatTime(message.timestamp_ms)} · #{message.ordinal + 1}</span>{message.id === sourceConversation.selected_message_id ? <em>所选消息</em> : null}</div><pre>{highlightSourceSpan(message.content, sourceItem?.key_position ? { char_start: sourceItem.key_position.source_char_start, char_end: sourceItem.key_position.source_char_end } : null)}</pre></article>; })}</div></div> : null}</> : null}</section></div> : null}
           </section>
         ) : pageId !== "imports" ? (
@@ -1293,7 +1317,7 @@ export default function App() {
               </div>
             ) : null}
 
-            {source === "claude" && step > 0 ? <ClaudeImport projects={projects} projectId={projectId} onProjectChange={setProjectId} onCreateProject={openProjectCreate} onBack={clearWorkflow} step={step} onStepChange={setStep} /> : null}
+            {source === "claude" && step > 0 ? <ClaudeImport projects={projects} projectId={projectId} onProjectChange={setProjectId} onCreateProject={openProjectCreate} onBack={clearWorkflow} onReview={() => setPageId("review")} step={step} onStepChange={setStep} /> : null}
             {step === 1 && source !== "claude" ? (
               <div className="import-card">
                 <h2>上传与检查</h2>
@@ -1302,7 +1326,7 @@ export default function App() {
                   <div className="project-picker">
                     <select id="project-space" disabled={busy} value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                       {!projectId ? <option value="">请选择项目空间</option> : null}
-                      {projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.name} · {item.project_id}</option>)}
+                      {projects.map((item) => <option key={item.project_id} value={item.project_id}>{item.full_path}</option>)}
                     </select>
                     <button className="secondary-button" type="button" disabled={busy} onClick={openProjectCreate}>新建项目</button>
                   </div>
@@ -1469,7 +1493,7 @@ export default function App() {
                 <p>{batch.original_filename} 已保存到 Vault，包含 {batch.conversation_count} 个会话和 {batch.message_count} 条消息。</p>
                 <dl className="receipt-grid">
                   <dt>批次 ID</dt><dd><code>{batch.batch_id}</code></dd>
-                  <dt>项目空间</dt><dd><code>{batch.app_id}/{batch.project_id}</code></dd>
+                  <dt>项目空间</dt><dd>{projectName(batch.project_id)}</dd>
                   <dt>原文件 SHA-256</dt><dd><code>{batch.raw_file_hash}</code></dd>
                   <dt>抽取状态</dt><dd>{extractResult?.status === "deferred_tool_messages" ? "待接入结构化工具轨迹" : extractResult?.status === "unsupported_role_messages" ? "已跳过不支持的消息角色" : extractResult?.status === "no_new_messages" ? "已跳过（消息均已存在）" : extractState === "done" ? "已生成待审核候选" : extractState === "failed" ? "失败，原文保留" : "未抽取"}</dd>
                 </dl>
@@ -1479,9 +1503,8 @@ export default function App() {
                 {extractResult?.status === "no_new_messages" ? <div className="notice success">本批次消息均与已有归档重复，原始文件仍已保留；没有重复发送到 EverOS。</div> : null}
                 {extractResult && extractResult.deferred_tool_message_count > 0 && extractResult.status === "extracted" ? <div className="notice warning">有 {extractResult.deferred_tool_message_count} 条工具结果暂未发送到 EverOS；原文与标准化记录仍保留在 Vault，结构化工具轨迹后续接入。</div> : null}
                 {extractResult && extractResult.unsupported_role_message_count > 0 && extractResult.status === "extracted" ? <div className="notice warning">有 {extractResult.unsupported_role_message_count} 条其他角色消息未参与聊天抽取；它们仍保留在 Vault 中。</div> : null}
-                {extractResult?.candidate_scope ? <div className="notice success">候选身份：<code>{extractResult.candidate_scope.app_id}/{extractResult.candidate_scope.project_id}/users/{extractResult.candidate_scope.user_id}</code>；<code>agent_id</code> 已保留，供后续工具轨迹抽取使用。</div> : null}
                 {extractState === "failed" ? <div className="notice error">{error}</div> : null}
-                <div className="actions right"><button className="primary-button" onClick={clearWorkflow}>继续导入</button></div>
+                <div className="actions right"><button className="secondary-button" onClick={clearWorkflow}>继续导入</button><button className="primary-button" onClick={() => setPageId("review")}>去审核候选</button></div>
               </div>
             ) : null}
           </section>

@@ -231,6 +231,23 @@ def test_export_audits_metadata_only_and_scope_errors_are_generic(pack_runtime) 
     assert "allow-memory" not in cross_scope.text
 
 
+def test_pack_includes_selected_space_and_nested_spaces(pack_runtime) -> None:
+    store, adapter = pack_runtime
+    child = store.create_project(name="Nested", parent_project_id="personal")["project_id"]
+    adapter.records[child] = [_seed_confirmed(store, memory_id="nested", everos_id="nested-core", project_id=child)]
+    config = {"namespaces": ["personal"], "kinds": ["fact"], "format": "markdown", "evidence_mode": "none", "token_budget": 4000}
+    response = asyncio.run(_post("/api/v1/packs/preview", config))
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["included_count"] == 1
+    result = asyncio.run(_post("/api/v1/packs/export", config | {
+        "memory_ids": ["nested"], "preview_sha256": preview["preview_sha256"],
+        "preview_generated_at": preview["generated_at"], "confirmed_ask_ids": [],
+        "confirm_unrecoverable_transfer": True, "delivery_action": "copy",
+    }))
+    assert result.status_code == 200, result.text
+
+
 def test_unknown_project_is_rejected_before_everos_and_offline_never_exports(pack_runtime) -> None:
     store, adapter = pack_runtime
     unknown = asyncio.run(_post("/api/v1/packs/preview", {

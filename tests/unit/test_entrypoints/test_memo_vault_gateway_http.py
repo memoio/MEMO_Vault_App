@@ -164,7 +164,10 @@ async def test_uninitialized_owner_listener_never_exposes_existing_routes():
 
 @pytest.mark.asyncio
 async def test_fixed_pack_owner_approval_ask_and_draft_are_single_use(runtime):
-    owner, external, _ = runtime
+    owner, external, adapter = runtime
+    store = owner.state.vault_store
+    child = store.create_project(name="Nested", parent_project_id="personal")["project_id"]
+    adapter.records[child] = [_seed_confirmed(store, memory_id="nested", everos_id="nested-core", project_id=child)]
     owner.include_router(
         __import__(
             "everos.entrypoints.memo_vault.routes.exports", fromlist=["router"]
@@ -183,7 +186,7 @@ async def test_fixed_pack_owner_approval_ask_and_draft_are_single_use(runtime):
             "format": "vault-memory/1",
             "evidence_mode": "none",
             "token_budget": 32000,
-            "memory_ids": ["visible", "ask"],
+            "memory_ids": ["visible", "ask", "nested"],
         }
         preview = await c.post("/api/v1/packs/preview", json=config)
         assert preview.status_code == 200
@@ -206,7 +209,7 @@ async def test_fixed_pack_owner_approval_ask_and_draft_are_single_use(runtime):
             "subject": "agent:fixed",
             "purpose": "deliver",
             "mode": "approved_pack",
-            "project_ids": ["personal"],
+            "project_ids": draft.json()["data"]["project_ids"],
             "token_budget": 32000,
             "evidence_mode": "none",
             "confirm_transfer": True,
@@ -214,6 +217,7 @@ async def test_fixed_pack_owner_approval_ask_and_draft_are_single_use(runtime):
         }
         created = await c.post("/api/v1/grants", json=grant_body)
         assert created.status_code == 200, created.text
+        assert set(grant_body["project_ids"]) == {"personal", child}
         repeated = await c.post("/api/v1/grants", json=grant_body)
         assert repeated.status_code == 409
         grant = created.json()["data"]
@@ -228,6 +232,7 @@ async def test_fixed_pack_owner_approval_ask_and_draft_are_single_use(runtime):
         assert {m["memory_id"] for m in response.json()["memories"]} == {
             "visible",
             "ask",
+            "nested",
         }
         assert (
             await c.post(f"/api/v1/external/packs/{grant['pack_id']}/deliver")
@@ -434,3 +439,169 @@ async def test_preference_memory_can_be_used_in_fixed_pack_and_context(runtime):
         )
         assert response.status_code == 200, response.text
         assert "Uses Python" in response.text
+
+
+@pytest.mark.asyncio
+async def test_owner_can_verify_token_matches_selected_grant(runtime):
+    from everos.service.memo_vault_export_contracts import GrantCreate
+
+    owner, _, _ = runtime
+    repo = owner.state.gateway_repository
+    first = repo.create_grant(
+        GrantCreate(subject="one", purpose="test", project_ids=["personal"]).model_dump(
+            mode="json"
+        )
+    )
+    second = repo.create_grant(
+        GrantCreate(subject="two", purpose="test", project_ids=["personal"]).model_dump(
+            mode="json"
+        )
+    )
+    owner_token = owner.state.owner_security.bootstrap_path.read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=owner),
+        base_url="http://vault.test",
+        headers={"Authorization": "Bearer " + owner_token},
+    ) as client:
+        good = await client.post(
+            f"/api/v1/grants/{first['id']}/verify-token", json={"token": first["token"]}
+        )
+        wrong = await client.post(
+            f"/api/v1/grants/{first['id']}/verify-token",
+            json={"token": second["token"]},
+        )
+        assert good.status_code == 200 and good.json()["data"]["matches"] is True
+        assert wrong.status_code == 200 and wrong.json()["data"]["matches"] is False
+        assert first["token"] not in good.text
+
+
+@pytest.mark.asyncio
+async def test_owner_connection_test_forwards_to_gateway(runtime, monkeypatch):
+    from everos.service.memo_vault_export_contracts import GrantCreate
+
+    owner, external, _ = runtime
+    repo = owner.state.gateway_repository
+    grant = repo.create_grant(
+        GrantCreate(
+            subject="test", purpose="test", project_ids=["personal"]
+        ).model_dump(mode="json")
+    )
+    repo.set_paused(False)
+    owner_token = owner.state.owner_security.bootstrap_path.read_text().strip()
+    real_client = httpx.AsyncClient
+    async with real_client(
+        transport=httpx.ASGITransport(app=owner),
+        base_url="http://vault.test",
+        headers={"Authorization": "Bearer " + owner_token},
+    ) as client:
+
+        def gateway_client(**kwargs):
+            return real_client(transport=httpx.ASGITransport(app=external), **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", gateway_client)
+        result = await client.post(
+            "/api/v1/gateway/test",
+            json={
+                "token": grant["token"],
+                "operation": "search_memory",
+                "body": {"project_ids": ["personal"], "query": "Python"},
+            },
+        )
+        assert result.status_code == 200
+        assert result.json()["data"]["status"] == 200
+        assert grant["token"] not in result.text
+        padded = await client.post(
+            "/api/v1/gateway/test",
+            json={
+                "token": "  " + grant["token"] + "  ",
+                "operation": "search_memory",
+                "body": {"project_ids": ["personal"], "query": "Python"},
+            },
+        )
+        assert padded.json()["data"]["status"] == 200
+        denied = await client.post(
+            "/api/v1/gateway/test",
+            json={
+                "token": "incorrect",
+                "operation": "search_memory",
+                "body": {"project_ids": ["personal"], "query": "Python"},
+            },
+        )
+        assert denied.status_code == 200
+        assert denied.json()["data"]["status"] == 401
+        assert denied.json()["data"]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_owner_recovers_encrypted_grant_token_after_restart(runtime):
+    owner, _, _ = runtime
+    owner_token = owner.state.owner_security.bootstrap_path.read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=owner),
+        base_url="http://vault.test",
+        headers={"Authorization": "Bearer " + owner_token},
+    ) as client:
+        created = await client.post(
+            "/api/v1/grants",
+            json={
+                "subject": "persistent",
+                "purpose": "test",
+                "project_ids": ["personal"],
+                "confirm_transfer": True,
+                "confirm_future_allow": True,
+            },
+        )
+        assert created.status_code == 200
+        grant = created.json()["data"]
+        with owner.state.gateway_repository.connect() as db:
+            row = db.execute(
+                "SELECT ciphertext FROM gateway_grant_credentials WHERE grant_id=?",
+                (grant["id"],),
+            ).fetchone()
+            assert row and grant["token"].encode() not in row["ciphertext"]
+        from everos.infra.memo_vault_gateway import GatewayRepository
+
+        repository = GatewayRepository(owner.state.vault_store.database_path)
+        repository.initialize()
+        owner.state.gateway_repository = repository
+        recovered = await client.post(f"/api/v1/grants/{grant['id']}/credential")
+        assert recovered.status_code == 200
+        assert recovered.json()["data"]["token"] == grant["token"]
+        await client.delete(f"/api/v1/grants/{grant['id']}")
+        assert (
+            await client.post(f"/api/v1/grants/{grant['id']}/credential")
+        ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_old_grant_token_can_be_saved_only_after_validation(runtime):
+    from everos.service.memo_vault_export_contracts import GrantCreate
+
+    owner, _, _ = runtime
+    repo = owner.state.gateway_repository
+    grant = repo.create_grant(
+        GrantCreate(
+            subject="legacy", purpose="test", project_ids=["personal"]
+        ).model_dump(mode="json")
+    )
+    token = owner.state.owner_security.bootstrap_path.read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=owner),
+        base_url="http://vault.test",
+    ) as client:
+        path = f"/api/v1/grants/{grant['id']}/credential"
+        assert (await client.post(path)).status_code == 401
+        client.headers["Authorization"] = "Bearer " + token
+        assert (await client.post(path)).status_code == 404
+        verified = await client.post(
+            f"/api/v1/grants/{grant['id']}/verify-token", json={"token": grant["token"]}
+        )
+        assert verified.json()["data"]["matches"] is True
+        assert (await client.post(path)).json()["data"]["token"] == grant["token"]
+        rotated = await client.post(f"/api/v1/grants/{grant['id']}/rotate")
+        assert rotated.status_code == 200
+        assert (await client.post(path)).json()["data"]["token"] == rotated.json()[
+            "data"
+        ]["token"]
+        owner.state.owner_security.public_demo = True
+        assert (await client.post(path)).status_code == 403

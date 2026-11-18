@@ -45,8 +45,8 @@ function documentStatus(status: string): string {
   return '保留在 Vault';
 }
 
-export default function ClaudeImport({ projects, projectId: project, onProjectChange: setProject, onCreateProject, onBack, step, onStepChange }: {
-  projects: ProjectSpace[]; projectId: string; onProjectChange: (projectId: string) => void; onCreateProject: () => void; onBack: () => void;
+export default function ClaudeImport({ projects, projectId: project, onProjectChange: setProject, onCreateProject, onBack, onReview, step, onStepChange }: {
+  projects: ProjectSpace[]; projectId: string; onProjectChange: (projectId: string) => void; onCreateProject: () => void; onBack: () => void; onReview: () => void;
   step: number; onStepChange: (step: number) => void;
 }) {
   const [jobs, setJobs] = useState<ClaudeJob[]>([]);
@@ -157,7 +157,7 @@ export default function ClaudeImport({ projects, projectId: project, onProjectCh
         <button type="button" aria-pressed={mode === 'manifest'} className={mode === 'manifest' ? 'selected' : ''} onClick={() => setMode('manifest')}><strong>上传 Manifest</strong><small>由服务端按链接下载</small></button>
       </div>
       <div className="claude-project-picker"><label htmlFor="claude-project-space">目标项目空间</label><div className="project-picker"><select id="claude-project-space" disabled={busy} value={project} onChange={e => setProject(e.target.value)}>
-        {!project && <option value="">请选择项目空间</option>}{projects.map(p => <option key={p.project_id} value={p.project_id}>{p.name} · {p.project_id}</option>)}
+        {!project && <option value="">请选择项目空间</option>}{projects.map(p => <option key={p.project_id} value={p.project_id}>{p.full_path}</option>)}
       </select><button type="button" className="secondary-button" disabled={busy} onClick={onCreateProject}>新建项目</button></div><small>本次所有 ZIP 将进入同一个目标项目与导入批次。</small></div>
       {mode === 'local' ? <>
         <div className={`claude-dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={e => { e.preventDefault(); setDragging(false); }} onDrop={e => { e.preventDefault(); setDragging(false); addLocalFiles(e.dataTransfer.files); }}>
@@ -177,7 +177,7 @@ export default function ClaudeImport({ projects, projectId: project, onProjectCh
     </>}
     {job && step <= 2 && <>
       <div className="claude-section-heading"><h3>{jobTitle(job)}</h3><span className={`claude-job-state state-${job.status}`}>{stageNames[job.status] ?? job.status}</span></div>
-      <p className="claude-job-meta">目标项目 {job.project_id} · {job.part_count ?? 1} 个 ZIP · 任务 {job.id.slice(0, 8)}{job.manifest_verified ? ' · 已按 Manifest 核对齐全' : ''}</p>
+      <p className="claude-job-meta">目标项目 {projects.find(p => p.project_id === job.project_id)?.full_path ?? '未知项目'} · {job.part_count ?? 1} 个 ZIP · 任务 {job.id.slice(0, 8)}{job.manifest_verified ? ' · 已按 Manifest 核对齐全' : ''}</p>
       <div className="claude-progress" role="status" aria-label="文件处理进度"><strong>文件进度</strong>{Object.entries(job.progress).filter(([name]) => name !== 'report').map(([name, value]) => {
         const part = value as { status?: string; bytes?: number };
         return <div className="claude-progress-row" key={name}><span className="claude-zip-icon">ZIP</span><span className="claude-filename">{name}</span><small>{part.status === 'failed' ? '下载失败' : part.status === 'downloaded' || part.status === 'uploaded' ? '已保存' : part.status === 'downloading' ? '下载中' : '等待处理'}</small><small>{fileSize(part.bytes ?? 0)}</small></div>;
@@ -192,7 +192,7 @@ export default function ClaudeImport({ projects, projectId: project, onProjectCh
         }} /></label>}
       </div>}
       {job.status === 'ready_for_preview' && !batch && step === 2 && <>
-        <label className="claude-merge-choice"><input type="checkbox" checked={merge} onChange={e => setMerge(e.target.checked)} /> 若导出中包含多个 Claude 项目，将它们都映射到 {job.project_id}</label>
+        <label className="claude-merge-choice"><input type="checkbox" checked={merge} onChange={e => setMerge(e.target.checked)} /> 若导出中包含多个 Claude 项目，将它们都映射到 {projects.find(p => p.project_id === job.project_id)?.full_path ?? '未知项目'}</label>
         <button className="primary-button" disabled={busy} onClick={() => void action(async () => setPreview(await claudeRequest<ImportPreview>(`${jobPath}/preview`, 'POST', JSON.stringify({ confirm_project_merge: merge }))))}>生成解析预览</button>
       </>}
     </>}
@@ -226,7 +226,7 @@ export default function ClaudeImport({ projects, projectId: project, onProjectCh
       })}>确认归档</button>
     </>}
     {batch && step === 3 && <>
-      <div className="notice success">原文已归档，关闭页面也不会丢失。候选记忆仍需人工审核。</div><p className="claude-job-meta">批次 {batch.batch_id} · 项目 {batch.project_id}</p>
+      <div className="notice success">原文已归档，关闭页面也不会丢失。候选记忆仍需人工审核。</div><p className="claude-job-meta">批次 {batch.batch_id} · 项目 {projects.find(p => p.project_id === batch.project_id)?.full_path ?? '未知项目'}</p>
       <button className="primary-button" disabled={busy || extractionStatus === 'extracted'} onClick={() => void action(async () => {
         const result = await extractImport(batch.batch_id);
         setExtractionStatus((await getImportStatus(batch.batch_id)).extraction_status);
@@ -265,12 +265,12 @@ export default function ClaudeImport({ projects, projectId: project, onProjectCh
       </article>)}
       <div className="actions right"><button className="primary-button" onClick={() => onStepChange(4)}>查看完成状态</button></div>
     </>}
-    {batch && step === 4 && <><h3>导入处理状态</h3><p>批次 {batch.batch_id} 已归档至 {batch.project_id}。候选记忆仍需在「候选审核」中确认。</p>
+    {batch && step === 4 && <><h3>导入处理状态</h3><p>批次 {batch.batch_id} 已归档至 {projects.find(p => p.project_id === batch.project_id)?.full_path ?? '未知项目'}。候选记忆仍需在「候选审核」中确认。</p>
       <p>项目文档：{content?.documents.filter(item => item.status === 'delivered').length ?? 0} 已进入 Knowledge · {content?.documents.filter(item => item.status !== 'delivered').length ?? 0} 保留在 Vault，仍可返回选择投递。</p>
-      <div className="actions"><button className="secondary-button" onClick={() => onStepChange(3)}>返回抽取与审核</button></div></>}
+      <div className="actions"><button className="secondary-button" onClick={() => onStepChange(3)}>返回抽取与审核</button><button className="primary-button" onClick={onReview}>去审核候选</button></div></>}
     </section>
       {step === 1 && !job ? <section className="claude-history"><h3>恢复已有导入任务</h3><p className="subtle">选择一个任务可继续预览、重试，或查看已归档内容。</p>
-        {jobs.length ? <div className="claude-job-list">{(showAllJobs ? jobs : jobs.slice(0, 6)).map(item => <button type="button" className="claude-history-item" key={item.id} onClick={() => { setJob(item); setProject(item.project_id); setPreview(null); setBatch(null); setContent(null); setDocumentText({}); setMerge(false); setError(null); onStepChange(item.status === 'committed' ? 3 : item.status === 'ready_for_preview' ? 2 : 1); }}><span className="claude-history-main"><strong>{jobTitle(item)}</strong><em className={`claude-job-state state-${item.status}`}>{stageNames[item.status] ?? item.status}</em></span><span>{item.project_id} · {jobTime(item.created_at)} · #{item.id.slice(0, 8)}</span></button>)}</div> : <p className="claude-empty-history">尚无导入任务</p>}
+        {jobs.length ? <div className="claude-job-list">{(showAllJobs ? jobs : jobs.slice(0, 6)).map(item => <button type="button" className="claude-history-item" key={item.id} onClick={() => { setJob(item); setProject(item.project_id); setPreview(null); setBatch(null); setContent(null); setDocumentText({}); setMerge(false); setError(null); onStepChange(item.status === 'committed' ? 3 : item.status === 'ready_for_preview' ? 2 : 1); }}><span className="claude-history-main"><strong>{jobTitle(item)}</strong><em className={`claude-job-state state-${item.status}`}>{stageNames[item.status] ?? item.status}</em></span><span>{projects.find(p => p.project_id === item.project_id)?.full_path ?? '未知项目'} · {jobTime(item.created_at)} · #{item.id.slice(0, 8)}</span></button>)}</div> : <p className="claude-empty-history">尚无导入任务</p>}
         {jobs.length > 6 && <button className="claude-text-button" onClick={() => setShowAllJobs(!showAllJobs)}>{showAllJobs ? '收起任务' : `查看全部 ${jobs.length} 个任务`}</button>}
       </section> : null}
     </div>

@@ -27,6 +27,7 @@ class GrantService:
         *,
         draft_id: str | None = None,
         request_key: str | None = None,
+        encrypt_token: Callable[[str, str], bytes] | None = None,
     ) -> dict[str, Any]:
         if not config.confirm_transfer or (
             config.mode == "live_scope" and not config.confirm_future_allow
@@ -61,6 +62,7 @@ class GrantService:
                 manifest=manifest,
                 draft_id=draft_id,
                 request_key=request_key,
+                encrypt_token=encrypt_token,
             )
         except RepositoryDeniedError as exc:
             raise GatewayError("PACK_APPROVAL_STALE", 409) from exc

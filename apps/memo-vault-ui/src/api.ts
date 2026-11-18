@@ -254,6 +254,7 @@ export interface PackExport {
 export type CandidateStatus = "pending" | "publishing" | "confirmed" | "rejected";
 export interface CandidateEvidence {
   message_id: string;
+  conversation_id?: string | null;
   role: string;
   timestamp_ms: number | null;
 }
@@ -534,7 +535,7 @@ export async function getCandidateSource(
 
 export interface CandidateChanges { content: string; kind: CandidateKind; namespace: string; validity_days: 30 | 90 | null; external_use: "ask" | "allow" | "deny" }
 
-export async function confirmCandidate(candidate: ReviewCandidate, changes: CandidateChanges): Promise<void> {
+export async function confirmCandidate(candidate: ReviewCandidate, changes: CandidateChanges, confirmAsManual = false): Promise<void> {
   await requestData<{ id: string; status: string; everos_memory_id: string; revision: number }>(
     await ownerFetch(`/api/v1/candidates/${encodeURIComponent(candidate.id)}/confirm`, {
       method: "POST",
@@ -546,7 +547,8 @@ export async function confirmCandidate(candidate: ReviewCandidate, changes: Cand
         namespace: changes.namespace,
         external_use: changes.external_use,
         validity_days: changes.validity_days,
-        evidence_kind: candidate.origin === "manual" ? "human_authored" : "human_verified",
+        evidence_kind: candidate.origin === "manual" || confirmAsManual ? "human_authored" : "human_verified",
+        confirm_as_manual: confirmAsManual,
       }),
     }),
   );

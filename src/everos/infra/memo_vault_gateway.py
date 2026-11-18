@@ -7,7 +7,7 @@ import json
 import secrets
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS export_grants (
  config_json TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
  revoked INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0,
  version INTEGER NOT NULL DEFAULT 1, pack_id TEXT, manifest_json TEXT);
+CREATE TABLE IF NOT EXISTS gateway_grant_credentials (
+ grant_id TEXT PRIMARY KEY, ciphertext BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS gateway_audit (
  id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, operation TEXT NOT NULL,
  transport TEXT NOT NULL,
@@ -117,6 +119,7 @@ class GatewayRepository:
         manifest: dict[str, Any] | None = None,
         draft_id: str | None = None,
         request_key: str | None = None,
+        encrypt_token: Callable[[str, str], bytes] | None = None,
     ) -> dict[str, Any]:
         token = "mv_" + secrets.token_urlsafe(32)
         grant_id = uuid.uuid4().hex
@@ -156,6 +159,11 @@ class GatewayRepository:
                     json.dumps(manifest) if manifest else None,
                 ),
             )
+            if encrypt_token is not None:
+                db.execute(
+                    "INSERT INTO gateway_grant_credentials VALUES(?,?)",
+                    (grant_id, encrypt_token(grant_id, token)),
+                )
             if request_key:
                 db.execute(
                     "INSERT INTO gateway_grant_requests VALUES(?,?,?)",
@@ -235,6 +243,47 @@ class GatewayRepository:
             ).fetchone()[0]
         return [self._public(row) for row in rows], int(total)
 
+    def token_matches_grant(self, grant_id: str, token: str) -> bool:
+        """Check a supplied token against a grant without disclosing the token."""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT token_hash FROM export_grants WHERE id=?", (grant_id,)
+            ).fetchone()
+        return row is not None and secrets.compare_digest(
+            row["token_hash"], self._hash(token)
+        )
+
+    def save_grant_credential(
+        self, grant_id: str, token: str, ciphertext: bytes
+    ) -> bool:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM export_grants WHERE id=?", (grant_id,)
+            ).fetchone()
+            if (
+                row is None
+                or self._public(row)["status"] != "active"
+                or not secrets.compare_digest(row["token_hash"], self._hash(token))
+            ):
+                return False
+            db.execute(
+                "INSERT OR REPLACE INTO gateway_grant_credentials VALUES(?,?)",
+                (grant_id, ciphertext),
+            )
+            return True
+
+    def grant_credential(self, grant_id: str) -> bytes | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT g.*, c.ciphertext FROM export_grants g "
+                "JOIN gateway_grant_credentials c ON c.grant_id=g.id WHERE g.id=?",
+                (grant_id,),
+            ).fetchone()
+            if row is None or self._public(row)["status"] != "active":
+                return None
+            return bytes(row["ciphertext"])
+
     def authorize(
         self, token: str, *, db: sqlite3.Connection | None = None
     ) -> dict[str, Any]:
@@ -274,12 +323,16 @@ class GatewayRepository:
                 "revoked=0",
                 (grant_id,),
             )
+            db.execute(
+                "DELETE FROM gateway_grant_credentials WHERE grant_id=?", (grant_id,)
+            )
 
     def delete_grant(self, grant_id: str) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT revoked,consumed,stale,expires_at FROM export_grants WHERE id=?",
+                "SELECT revoked,consumed,stale,expires_at FROM export_grants "
+                "WHERE id=?",
                 (grant_id,),
             ).fetchone()
             if row is None:
@@ -293,13 +346,18 @@ class GatewayRepository:
                 raise RepositoryDeniedError(
                     "Active grants must be revoked before deletion."
                 )
+            db.execute(
+                "DELETE FROM gateway_grant_credentials WHERE grant_id=?", (grant_id,)
+            )
             db.execute("DELETE FROM gateway_audit WHERE grant_id=?", (grant_id,))
             db.execute(
                 "DELETE FROM gateway_grant_requests WHERE grant_id=?", (grant_id,)
             )
             db.execute("DELETE FROM export_grants WHERE id=?", (grant_id,))
 
-    def rotate(self, grant_id: str) -> dict[str, Any]:
+    def rotate(
+        self, grant_id: str, *, encrypt_token: Callable[[str, str], bytes] | None = None
+    ) -> dict[str, Any]:
         token = "mv_" + secrets.token_urlsafe(32)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -319,6 +377,14 @@ class GatewayRepository:
                 "version=version+1 WHERE id=?",
                 (self._hash(token), token[:6] + "…" + token[-4:], grant_id),
             )
+            db.execute(
+                "DELETE FROM gateway_grant_credentials WHERE grant_id=?", (grant_id,)
+            )
+            if encrypt_token is not None:
+                db.execute(
+                    "INSERT INTO gateway_grant_credentials VALUES(?,?)",
+                    (grant_id, encrypt_token(grant_id, token)),
+                )
         return self.get_grant(grant_id) | {"token": token}
 
     def begin(

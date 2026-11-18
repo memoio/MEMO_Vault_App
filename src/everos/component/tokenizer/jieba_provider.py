@@ -30,6 +30,10 @@ with warnings.catch_warnings():
     # of our control, so we suppress them at the single jieba import site.
     # See https://github.com/EverMind-AI/EverOS/issues/304.
     warnings.simplefilter("ignore", SyntaxWarning)
+    warnings.filterwarnings(
+        "ignore", message="pkg_resources is deprecated as an API.*",
+        category=DeprecationWarning,
+    )
     import jieba
 
 # Small bilingual stopword set. Intentionally tight (not a full

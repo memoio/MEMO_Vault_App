@@ -56,7 +56,13 @@ export default function AdpExport() {
   const [loading, setLoading] = useState(true);
   const refresh = useCallback(async () => {
     setLoading(true);
-    try { setTraces(await request<Trace[]>("traces")); setError(""); }
+    try {
+      const available = (await request<Trace[]>("traces"))
+        .filter(trace => trace.eligible && trace.tool_call_count > 0);
+      setTraces(available);
+      setSelected(current => current.filter(id => available.some(trace => trace.id === id)));
+      setResult(null); setPreviewId(null); setError("");
+    }
     catch (e) { setError(e instanceof Error ? e.message : "读取轨迹失败"); }
     finally { setLoading(false); }
   }, []);
@@ -98,7 +104,7 @@ export default function AdpExport() {
     {error && <p role="alert" className="adp-error">{error}</p>}
     <div className="adp-table-wrap"><table className="adp-table"><thead><tr><th>选择</th><th>轨迹</th><th>来源 / 项目</th><th>工具调用</th><th>观察结果</th><th>训练授权</th><th>脱敏预览</th></tr></thead><tbody>
       {traces.map(t => <tr key={t.id} className={!t.eligible ? "adp-disabled" : ""}><td><input aria-label={`选择 ${t.title}`} type="checkbox" disabled={!t.eligible || busy} checked={selected.includes(t.id)} onChange={() => toggle(t.id)} /></td><td><strong>{t.title}</strong><br/><small>{t.session_id}</small>{!t.eligible && <div>无真实工具调用，不能导出</div>}</td><td>{t.source === "deepseek_harness" ? "DeepSeek Harness" : "Claude"}<br/><small>{t.project_id}</small></td><td>{t.tool_call_count}</td><td>{t.tool_result_count} 条</td><td>{t.eligible ? <label><input type="checkbox" checked={t.consent} disabled={busy} onChange={e => void consent([t.id], e.target.checked)} /> 允许</label> : "—"}</td><td>{t.eligible ? <button className="secondary-button" disabled={busy} onClick={() => void validate([t.id], true)}>预览</button> : "—"}</td></tr>)}
-    </tbody></table>{!loading && !traces.length && <p className="adp-empty">暂无已归档的 DeepSeek 或 Claude 会话。</p>}{loading && <p className="adp-empty">正在读取轨迹…</p>}</div>
+    </tbody></table>{!loading && !traces.length && <p className="adp-empty">暂无包含真实工具调用的可导出轨迹。</p>}{loading && <p className="adp-empty">正在读取轨迹…</p>}</div>
     <div className="adp-actions"><label className="adp-format-select">预览与校验格式 <select value={format} disabled={busy} onChange={e => { setFormat(e.target.value as ExportFormat); setResult(null); setPreviewId(null); }}><option value="adp">ADP</option><option value="atif">ATIF-v1.7</option></select></label><button className="secondary-button" disabled={!selected.length || busy} onClick={() => void validate(selected)}>Schema 校验</button><button className="primary-button" disabled={!result?.valid || result.format !== "adp" || !!previewId || busy} onClick={() => void download("adp")}>下载 ADP JSONL</button><button className="primary-button" disabled={!result?.valid || result.format !== "atif" || !!previewId || busy} onClick={() => void download("atif")}>下载 ATIF JSONL</button><small>请选择格式并校验后下载。</small></div>
     {result && <div className="adp-results" aria-live="polite"><strong>{previewId ? "脱敏预览" : result.valid ? "校验通过" : "校验未通过"}</strong>{result.traces.map(r => <div key={r.id}><p>{traces.find(t => t.id === r.id)?.title ?? r.id}：{r.valid ? `校验通过，脱敏 ${r.redaction_count} 处` : r.error}</p>{r.valid && <><RedactionDetails redactions={r.redactions ?? []} /><details><summary>查看脱敏后的完整候选内容</summary><pre>{JSON.stringify(r.trajectory, null, 2)}</pre></details></>}</div>)}</div>}
   </section>;

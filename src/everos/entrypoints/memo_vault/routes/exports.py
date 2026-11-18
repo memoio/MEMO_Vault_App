@@ -59,11 +59,20 @@ async def _load_sources(request: Request, namespaces: list[str]):
     return sources
 
 
+def expand_pack_request(request: Request, body: PackPreviewRequest) -> PackPreviewRequest:
+    store = request.app.state.vault_store
+    for project_id in body.namespaces:
+        if not store.has_project(project_id):
+            raise _raise_http("PROJECT_NOT_FOUND", "One or more selected projects do not exist.", 404)
+    return body.model_copy(update={"namespaces": store.expand_project_scope(body.namespaces)})
+
+
 @router.post("/packs/preview", response_model=ApiEnvelope[PackPreviewData])
 async def preview_pack(
     body: PackPreviewRequest, request: Request
 ) -> ApiEnvelope[PackPreviewData]:
     try:
+        body = expand_pack_request(request, body)
         sources = await _load_sources(request, body.namespaces)
         data = MemoryPackService().preview(body, sources)
     except HTTPException:
@@ -80,6 +89,7 @@ async def export_pack(
     body: PackExportRequest, request: Request
 ) -> ApiEnvelope[PackExportData]:
     try:
+        body = expand_pack_request(request, body)
         sources = await _load_sources(request, body.namespaces)
         data = MemoryPackService().export(body, sources)
     except HTTPException:

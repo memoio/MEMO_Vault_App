@@ -93,6 +93,10 @@ def configure_gateway(app: FastAPI, store: VaultStore, adapter: Any) -> GatewayS
         )
 
     service = GatewayService(repository, load, render)
+    def expand_search_scope(scope: list[str], authorized: list[str]) -> list[str]:
+        return store.expand_project_scope(scope, authorized)
+
+    service.expand_search_scope = expand_search_scope
     app.state.gateway_repository = repository
     app.state.gateway_service = service
     app.state.grant_service = GrantService(repository, service, store.has_project)

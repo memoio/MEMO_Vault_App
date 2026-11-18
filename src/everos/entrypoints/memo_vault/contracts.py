@@ -51,6 +51,7 @@ class ConfirmCandidateRequest(BaseModel):
     external_use: Literal["allow", "ask", "deny"] = "ask"
     validity_days: Literal[30, 90] | None = None
     evidence_kind: Literal["human_verified", "human_authored"]
+    confirm_as_manual: bool = False
 
 
 class ManualCandidateRequest(BaseModel):

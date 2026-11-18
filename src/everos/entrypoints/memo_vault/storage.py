@@ -496,6 +496,24 @@ class VaultStore:
         result.sort(key=lambda project: (str(project["full_path"]).casefold(), str(project["project_id"])))
         return result
 
+    def expand_project_scope(self, selected: list[str], allowed: list[str] | None = None) -> list[str]:
+        projects = self.list_projects()
+        parents = {str(project["project_id"]): project["parent_project_id"] for project in projects}
+        roots = set(selected)
+        candidates = allowed if allowed is not None else list(parents)
+        result: list[str] = []
+        for project_id in dict.fromkeys(candidates):
+            current: str | None = project_id
+            seen: set[str] = set()
+            while current and current not in seen:
+                if current in roots:
+                    result.append(project_id)
+                    break
+                seen.add(current)
+                parent = parents.get(current)
+                current = str(parent) if parent else None
+        return result
+
     def create_project(
         self,
         *,

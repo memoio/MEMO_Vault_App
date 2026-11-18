@@ -455,7 +455,7 @@ button:disabled { opacity: .48; cursor: not-allowed; }
   .review-layout { grid-template-columns: 1fr; }
   .evidence-panel { position: static; max-height: none; }
   .library-workspace { grid-template-columns: 1fr; gap: 12px; }
-  .library-project-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .library-project-sidebar { grid-template-columns: minmax(0, 1fr); }
   .library-sidebar-heading { grid-column: 1 / -1; }
   .library-toolbar { flex-wrap: wrap; }
   .library-search { flex-basis: 100%; }
@@ -628,3 +628,53 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .adp-redaction-path { color: #73849a; overflow-wrap: anywhere; font-size: 12px; }
 .adp-redaction-snippet { white-space: pre-wrap; overflow-wrap: anywhere; color: #23374a; margin-top: 4px; }
 .adp-redaction-snippet mark { background: #fff0ad; color: #804b00; border-radius: 3px; padding: 1px 3px; font-weight: 600; }
+
+.remote-mcp-guide { display: grid; gap: 12px; min-width: 0; }
+.remote-mcp-guide > p { margin: 0; }
+.remote-client-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.remote-mcp-steps { display: grid; gap: 18px; margin: 0; padding-left: 25px; }
+.remote-mcp-steps li { padding-left: 5px; }
+.remote-mcp-steps h3 { margin: 0 0 6px; }
+.remote-mcp-steps p { margin: 0 0 9px; color: #64748b; line-height: 1.6; }
+.remote-mcp-code { position: relative; min-width: 0; }
+.remote-mcp-code pre { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 72px; }
+.remote-mcp-code button { position: absolute; right: 8px; top: 8px; }
+
+.remote-mcp-steps ol { margin: 8px 0 0; padding-left: 22px; color: #64748b; line-height: 1.8; }
+.remote-mcp-example { position: relative; margin-top: 12px; padding: 12px 76px 12px 14px; border: 1px solid #dce5f0; border-radius: 9px; background: #f2f6fb; }
+.remote-mcp-example p { margin: 6px 0 0; color: #26364b; }
+.remote-mcp-example button { position: absolute; right: 8px; top: 8px; }
+
+/* Authorization and connection workflow */
+.authorization-page { color: #24364b; font-size: 14px; line-height: 1.55; }
+.authorization-page .panel { border: 1px solid #dce5f0; border-radius: 12px; box-shadow: 0 2px 8px #1c3d6510; }
+.authorization-page .integration-panel, .authorization-page .connection-panel { padding: 22px; gap: 16px; }
+.authorization-page label { color: #556b84; font-size: 13px; font-weight: 500; }
+.authorization-page input:not([type="checkbox"]), .authorization-page select { min-height: 40px; border: 1px solid #d4e0ec; border-radius: 8px; font-size: 14px; }
+.authorization-page .muted, .authorization-page small { color: #6b7f97; font-size: 12px; line-height: 1.6; }
+.authorization-page .secret-reveal { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; padding: 16px 20px; border-color: #cfdfef; background: #f4f9ff !important; }
+.secret-reveal > div:first-child { display: grid; gap: 3px; }
+.secret-reveal .actions { margin: 0; }
+.remote-client-tabs { padding: 5px; border-radius: 10px; background: #f1f5fa; }
+.remote-client-tabs button { flex: 1 1 auto; min-height: 36px; font-size: 13px; }
+.remote-mcp-steps { counter-reset: mcp-step; list-style: none; padding-left: 0; gap: 20px; }
+.remote-mcp-steps > li { position: relative; padding-left: 39px; counter-increment: mcp-step; }
+.remote-mcp-steps > li::before { content: counter(mcp-step); position: absolute; left: 0; top: 0; width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid #c9d9ea; border-radius: 50%; background: #f7faff; color: #3472b8; font-size: 13px; font-weight: 700; }
+.remote-mcp-steps h3 { color: #23364d; font-size: 15px; line-height: 1.8; }
+.remote-mcp-steps p, .remote-mcp-steps ol { font-size: 13px; line-height: 1.7; }
+.authorization-page .remote-mcp-code pre, .authorization-page .integration-panel > pre { margin: 0; padding: 16px 76px 16px 16px; border: 1px solid #dce5ef; border-radius: 9px; background: #f2f6fb; color: #253c56; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.remote-mcp-code button, .remote-mcp-example button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+.remote-token-hint { padding: 10px 12px; border-radius: 8px; background: #fff8e8; color: #806023; font-size: 13px; }
+.remote-copy-error { color: #a23139; font-size: 13px; }
+@media (max-width: 640px) { .authorization-page .integration-panel, .authorization-page .connection-panel { padding: 16px; } .remote-mcp-steps > li { padding-left: 34px; } }
+
+.secret-reveal .issued-token { display: block; max-width: min(100%, 620px); padding: 8px 10px; border: 1px solid #d8e6f4; border-radius: 6px; background: #fff; color: #243d58; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+
+.connection-result { padding: 14px; border: 1px solid #d4e6db; border-radius: 10px; background: #f5fbf7; color: #294b37; }
+.connection-result.is-error { border-color: #efd6d6; background: #fff8f7; color: #813c3d; }
+.connection-result-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
+.connection-result-heading span { color: #718399; font-size: 12px; }
+.connection-result p { margin: 8px 0; font-size: 13px; line-height: 1.65; }
+.connection-result details { margin-top: 10px; }
+.connection-result summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.authorization-page .connection-result pre { margin: 8px 0 0; padding: 12px; max-height: 300px; background: #fff; border: 1px solid #e0e8ef; font-size: 12px; }
