@@ -102,6 +102,32 @@ class EverOSAdapter(Protocol):
         content: str | None = None,
     ) -> dict[str, object]: ...
 
+    async def search_memories(
+        self,
+        *,
+        query: str,
+        app_id: str,
+        project_id: str,
+        user_id: str,
+        top_k: int = 8,
+        method: Literal["hybrid", "keyword", "vector"] = "hybrid",
+        include_profile: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]: ...
+
+    async def search_knowledge(
+        self,
+        *,
+        query: str,
+        app_id: str,
+        project_id: str,
+        top_k: int = 6,
+        method: Literal["hybrid", "keyword", "vector"] = "hybrid",
+        include_content: bool = True,
+        score_threshold: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, object]]: ...
+
 class EverOSAdapterError(RuntimeError):
     """EverOS is unavailable or rejected the import extraction request."""
 
@@ -787,3 +813,111 @@ class EverOSHttpAdapter:
             "deferred_tool_message_count": deferred_tool_message_count,
             "unsupported_role_message_count": unsupported_role_message_count,
         }
+
+    async def search_memories(
+        self,
+        *,
+        query: str,
+        app_id: str,
+        project_id: str,
+        user_id: str,
+        top_k: int = 8,
+        method: Literal["hybrid", "keyword", "vector"] = "hybrid",
+        include_profile: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Search user memories within one scoped app/project space."""
+        payload = {
+            "user_id": user_id,
+            "app_id": app_id,
+            "project_id": project_id,
+            "query": query,
+            "method": method,
+            "top_k": top_k,
+            "include_profile": include_profile,
+        }
+        timeout = min(self.timeout_seconds, timeout_seconds or 90.0)
+        async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/v2/memory/search",
+                    json=payload,
+                )
+                _raise_for_everos_error(response, operation="memory search")
+                body = response.json()
+                data = body.get("data") if isinstance(body, dict) else None
+                if not isinstance(data, dict):
+                    raise EverOSAdapterError(
+                        "EverOS returned an invalid memory search response.",
+                        code="EVEROS_INVALID_MEMORY_SEARCH",
+                        status_code=502,
+                    )
+                return data
+            except httpx.HTTPError as exc:
+                raise EverOSAdapterError(
+                    "Could not connect to EverOS while searching memories "
+                    f"({type(exc).__name__})."
+                ) from exc
+            except ValueError as exc:
+                raise EverOSAdapterError(
+                    "EverOS returned an invalid memory search response.",
+                    code="EVEROS_INVALID_MEMORY_SEARCH",
+                    status_code=502,
+                ) from exc
+
+    async def search_knowledge(
+        self,
+        *,
+        query: str,
+        app_id: str,
+        project_id: str,
+        top_k: int = 6,
+        method: Literal["hybrid", "keyword", "vector"] = "hybrid",
+        include_content: bool = True,
+        score_threshold: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, object]]:
+        """Search project Knowledge topics within one scoped app/project space."""
+        payload: dict[str, object] = {
+            "query": query,
+            "method": method,
+            "top_k": top_k,
+            "include_content": include_content,
+            "app_id": app_id,
+            "project_id": project_id,
+        }
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
+        timeout = min(self.timeout_seconds, timeout_seconds or 90.0)
+        async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/v2/knowledge/search",
+                    json=payload,
+                )
+                _raise_for_everos_error(response, operation="knowledge search")
+                body = response.json()
+                data = body.get("data") if isinstance(body, dict) else None
+                hits = (
+                    data.get("hits")
+                    if isinstance(data, dict)
+                    else (body.get("hits") if isinstance(body, dict) else None)
+                )
+                if not isinstance(hits, list):
+                    raise EverOSAdapterError(
+                        "EverOS returned an invalid knowledge search response.",
+                        code="EVEROS_INVALID_KNOWLEDGE_SEARCH",
+                        status_code=502,
+                    )
+                return [hit for hit in hits if isinstance(hit, dict)]
+            except httpx.HTTPError as exc:
+                raise EverOSAdapterError(
+                    "Could not connect to EverOS while searching knowledge "
+                    f"({type(exc).__name__})."
+                ) from exc
+            except ValueError as exc:
+                raise EverOSAdapterError(
+                    "EverOS returned an invalid knowledge search response.",
+                    code="EVEROS_INVALID_KNOWLEDGE_SEARCH",
+                    status_code=502,
+                ) from exc

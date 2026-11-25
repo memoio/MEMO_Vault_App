@@ -96,9 +96,18 @@ def main():
                 )
                 if inputs["input_ids"].shape[-1] <= 2048:
                     break
-                if len(history) <= 1 or history[0]["role"] == "system":
+                if len(history) <= 1:
                     raise ValueError("框架消息超过模型上下文预算，请缩短对话")
-                history = history[2:] if len(history) > 2 else history[-1:]
+                if history[0]["role"] == "system":
+                    if len(history) <= 2:
+                        raise ValueError("框架消息超过模型上下文预算，请缩短对话")
+                    history = (
+                        [history[0], *history[3:]]
+                        if len(history) > 3
+                        else [history[0], history[-1]]
+                    )
+                else:
+                    history = history[2:] if len(history) > 2 else history[-1:]
                 truncated = True
             inputs = inputs.to(device)
             if agent != "default":

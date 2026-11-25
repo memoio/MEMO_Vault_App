@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 MODELS = {
@@ -32,6 +33,12 @@ class AgentChatStore:
             columns = {row[1] for row in c.execute("PRAGMA table_info(agent_chat_messages)")}
             if "framework_version" not in columns:
                 c.execute("ALTER TABLE agent_chat_messages ADD COLUMN framework_version TEXT")
+            if "use_project_context" not in columns:
+                c.execute("ALTER TABLE agent_chat_messages ADD COLUMN use_project_context INTEGER NOT NULL DEFAULT 1")
+            if "context_status" not in columns:
+                c.execute("ALTER TABLE agent_chat_messages ADD COLUMN context_status TEXT")
+            if "context_meta_json" not in columns:
+                c.execute("ALTER TABLE agent_chat_messages ADD COLUMN context_meta_json TEXT")
             c.execute(
                 "UPDATE agent_chat_messages SET status='failed',content='服务重启导致请求中断，请重试。' WHERE status='pending'"
             )
@@ -73,6 +80,15 @@ class AgentChatStore:
                 )
             ]
             for message in result["messages"]:
+                message["use_project_context"] = bool(message.get("use_project_context", 1))
+                raw_meta = message.pop("context_meta_json", None)
+                if raw_meta:
+                    try:
+                        message["context_meta"] = json.loads(raw_meta)
+                    except ValueError:
+                        message["context_meta"] = None
+                else:
+                    message["context_meta"] = None
                 message["events"] = [dict(event) for event in c.execute(
                     "SELECT type,content FROM agent_chat_events WHERE message_id=? ORDER BY id", (message["id"],)
                 )]
@@ -81,6 +97,14 @@ class AgentChatStore:
     def add_event(self, message_id, kind, content):
         with self.vault.connect() as c:
             c.execute("INSERT INTO agent_chat_events(message_id,type,content) VALUES(?,?,?)", (message_id, kind, content[:20000]))
+
+    def update_message_context(self, aid, context_status, context_meta):
+        payload = json.dumps(context_meta, ensure_ascii=False) if context_meta is not None else None
+        with self.vault.connect() as c:
+            c.execute(
+                "UPDATE agent_chat_messages SET context_status=?, context_meta_json=? WHERE id=?",
+                (context_status, payload, aid),
+            )
 
     def delete_session(self, sid):
         with self.vault.connect() as c:
@@ -111,10 +135,11 @@ class AgentChatStore:
                 raise KeyError(sid)
         return self.get_session(sid)
 
-    def begin_message(self, sid, content, model, agent, request_id):
+    def begin_message(self, sid, content, model, agent, request_id, use_project_context=True):
         resolve_model(model, agent)
         if not content.strip() or len(content) > 20000:
             raise ValueError("消息为空或超过长度限制")
+        use_ctx_flag = 1 if use_project_context else 0
         with self.vault.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute(
@@ -123,7 +148,7 @@ class AgentChatStore:
             if not row:
                 raise KeyError(sid)
             existing = c.execute(
-                "SELECT id, model_id, agent_id FROM agent_chat_messages WHERE session_id=? AND request_id=? AND role='assistant'",
+                "SELECT id, model_id, agent_id, use_project_context FROM agent_chat_messages WHERE session_id=? AND request_id=? AND role='assistant'",
                 (sid, request_id),
             ).fetchone()
             if existing:
@@ -134,6 +159,7 @@ class AgentChatStore:
                 if (
                     existing["model_id"] != model
                     or existing["agent_id"] != agent
+                    or int(existing["use_project_context"]) != use_ctx_flag
                     or not original
                     or original["content"] != content
                 ):
@@ -146,12 +172,12 @@ class AgentChatStore:
                 raise ValueError("当前会话正在生成")
             uid, aid = uuid.uuid4().hex, uuid.uuid4().hex
             c.execute(
-                "INSERT INTO agent_chat_messages(id,session_id,role,content,model_id,agent_id,status,request_id) VALUES(?,?,?,?,?,?,?,?)",
-                (uid, sid, "user", content, model, agent, "completed", request_id),
+                "INSERT INTO agent_chat_messages(id,session_id,role,content,model_id,agent_id,status,request_id,use_project_context) VALUES(?,?,?,?,?,?,?,?,?)",
+                (uid, sid, "user", content, model, agent, "completed", request_id, use_ctx_flag),
             )
             c.execute(
-                "INSERT INTO agent_chat_messages(id,session_id,role,content,model_id,agent_id,status,request_id) VALUES(?,?,?,?,?,?,?,?)",
-                (aid, sid, "assistant", "", model, agent, "pending", request_id),
+                "INSERT INTO agent_chat_messages(id,session_id,role,content,model_id,agent_id,status,request_id,use_project_context) VALUES(?,?,?,?,?,?,?,?,?)",
+                (aid, sid, "assistant", "", model, agent, "pending", request_id, use_ctx_flag),
             )
             title = (
                 content.strip().replace("\n", " ")[:40]
@@ -164,9 +190,20 @@ class AgentChatStore:
             )
         return {"assistant_id": aid, "duplicate": False}
 
-    def finish_message(self, aid, content, failed=False, framework_version=None):
+    def get_message(self, sid, mid):
+        with self.vault.connect() as c:
+            row = c.execute(
+                "SELECT * FROM agent_chat_messages WHERE session_id=? AND id=?",
+                (sid, mid),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def finish_message(
+        self, aid, content, failed=False, framework_version=None, status=None
+    ):
+        final_status = status if status is not None else ("failed" if failed else "completed")
         with self.vault.connect() as c:
             c.execute(
                 "UPDATE agent_chat_messages SET content=?,status=?,framework_version=? WHERE id=? AND status=?",
-                (content, "failed" if failed else "completed", framework_version, aid, "pending"),
+                (content, final_status, framework_version, aid, "pending"),
             )

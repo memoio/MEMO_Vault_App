@@ -88,7 +88,19 @@ class OwnerSecurity:
             > get_utc_now().timestamp()
         )
 
+    def _is_plugin_request(self, request: Request) -> bool:
+        path = request.url.path
+        if path.startswith("/api/v1/plugin/"):
+            return True
+        if path == "/api/v1/projects" and request.method in {"GET", "OPTIONS"}:
+            origin = request.headers.get("origin", "")
+            if origin.startswith("chrome-extension://") or request.headers.get("x-memo-plugin-client") == "memo-plugins":
+                return True
+        return False
+
     def check(self, request: Request) -> int | None:
+        if self._is_plugin_request(request):
+            return None
         if not self.origin_allowed(request):
             return 403
         if not self.authenticated(request):

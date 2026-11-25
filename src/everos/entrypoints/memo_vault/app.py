@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from .adapter import EverOSHttpAdapter
 from .agent_chat_service import AgentChatStore
@@ -24,12 +25,14 @@ from .request_limits import ClaudeLocalUploadLimitMiddleware
 from .routes import (
     candidates,
     claude_content,
+    data_vault_export,
     exports,
     grants,
     import_jobs,
     imports,
     knowledge_exports,
     memories,
+    plugin_ingest,
     projects,
     system,
 )
@@ -51,6 +54,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.swe_runtime = SWERuntime(app.state.agent_runtime)
     app.state.agentlab_runtime = AgentLabRuntime(app.state.agent_runtime)
     app.state.agent_chat_tasks = set()
+    app.state.agent_chat_task_map = {}
+    app.state.agent_chat_stop_requests = set()
     app.state.extraction_tasks = set()
     app.state.knowledge_delivery_tasks = set()
     app.state.knowledge_export_tasks = set()
@@ -139,5 +144,15 @@ app.include_router(knowledge_exports.router, prefix="/api/v1")
 
 app.include_router(grants.router, prefix="/api/v1")
 app.include_router(agent_chat.router, prefix="/api/v1")
+app.include_router(agent_chat.plugin_router, prefix="/api/v1")
+app.include_router(plugin_ingest.router, prefix="/api/v1")
+app.include_router(data_vault_export.router, prefix="/api/v1")
 app.add_middleware(ClaudeLocalUploadLimitMiddleware)
 install_owner_security(app)
+# Outermost middleware: handle CORS preflight and response headers strictly for Chrome extensions.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^chrome-extension://[a-z0-9-]+$",
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Memo-Plugin-Client"],
+)

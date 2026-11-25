@@ -147,6 +147,7 @@ async def list_candidates(
     kind: str | None = Query(default=None, pattern="^(preference|fact|decision|todo|episode|profile)$"),
     origin: str | None = Query(default=None, pattern="^(import|agent|manual)$"),
     evidence: str | None = Query(default=None, pattern="^(valid|invalid|not_required)$"),
+    batch_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> ApiEnvelope[dict[str, object]]:
     store = request.app.state.vault_store
     clauses: list[str] = []
@@ -163,6 +164,9 @@ async def list_candidates(
     if origin:
         clauses.append("c.origin = ?")
         params.append(origin)
+    if batch_id:
+        clauses.append("c.batch_id = ?")
+        params.append(batch_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with store.connect() as connection:
         rows = connection.execute(

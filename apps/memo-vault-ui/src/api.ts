@@ -473,7 +473,7 @@ export async function extractImport(batchId: string): Promise<ExtractionResult> 
     await requestData<{ status: string }>(start);
   }
   let terminalWithoutResult = 0;
-  for (;;) {
+  for (; ;) {
     await new Promise<void>(resolve => setTimeout(resolve, 3000));
     const state = await requestData<{ extraction_status: string; extraction_result?: ExtractionResult | null; error_message?: string | null }>(
       await ownerFetch(`${base}/status`),
@@ -493,12 +493,13 @@ export async function extractImport(batchId: string): Promise<ExtractionResult> 
   }
 }
 
-export async function getCandidates(filters: { status?: string; kind?: string; origin?: string; evidence?: string } = {}): Promise<ReviewCandidate[]> {
+export async function getCandidates(filters: { status?: string; kind?: string; origin?: string; evidence?: string; batch_id?: string } = {}): Promise<ReviewCandidate[]> {
   const params = new URLSearchParams();
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.kind) params.set("kind", filters.kind);
   if (filters.origin) params.set("origin", filters.origin);
   if (filters.evidence) params.set("evidence", filters.evidence);
+  if (filters.batch_id) params.set("batch_id", filters.batch_id);
   const suffix = params.size ? `?${params.toString()}` : "";
   const result = await requestData<{ candidates: ReviewCandidate[]; total: number }>(
     await ownerFetch(`/api/v1/candidates${suffix}`),
@@ -579,14 +580,20 @@ export interface ClaudeRecord {
 export interface ClaudeContent {
   documents: ClaudeRecord[]; assertions: ClaudeRecord[];
   agent_event_count: number;
-  agent_events: { record_id: string; record_type: string; call_id?: string;
+  agent_events: {
+    record_id: string; record_type: string; call_id?: string;
     tool_name?: string; sequence: number; timestamp_ms: number | null;
-    is_error: boolean; preview: string }[];
-  assets: { record_id: string; filename?: string; media_type?: string; bytes: number; status: string;
+    is_error: boolean; preview: string
+  }[];
+  assets: {
+    record_id: string; filename?: string; media_type?: string; bytes: number; status: string;
     target_id?: string | null; review_decision?: 'knowledge' | 'vault_only' | 'exclude' | null;
-    linked_document_ids: string[] }[];
-  source_files: { name?: string; original_name?: string; sha256?: string; media_type?: string;
-    bytes?: number; status?: string; container?: string }[];
+    linked_document_ids: string[]
+  }[];
+  source_files: {
+    name?: string; original_name?: string; sha256?: string; media_type?: string;
+    bytes?: number; status?: string; container?: string
+  }[];
   source_file_total?: number; source_files_truncated?: boolean;
   scope: { app_id: string; project_id: string };
   report: { warnings?: string[]; counts?: Record<string, number> };

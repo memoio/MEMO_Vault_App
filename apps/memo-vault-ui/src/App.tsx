@@ -7,6 +7,7 @@ import { text as authText } from "./authorization.zh";
 import ClaudeImport from "./ClaudeImport";
 import ChatGPTReview from "./ChatGPTReview";
 import KnowledgeExport from "./KnowledgeExport";
+import WebDataExport from "./WebDataExport";
 import TrackInventory from "./TrackInventory";
 import AdpExport from "./AdpExport";
 import { useEffect, useRef, useState, type DragEvent } from "react";
@@ -463,8 +464,22 @@ function PackItemRow({ item, checked, onToggle }: { item: PackPreviewItem; check
 }
 
 export default function App() {
-  const [pageId, setPageId] = useState<PageId>("imports");
-  const [exportTab, setExportTab] = useState<'memory' | 'knowledge'>('memory');
+  const [pageId, setPageId] = useState<PageId>(() => {
+    const requested = new URLSearchParams(window.location.search).get("page");
+    return pages.some((item) => item.id === requested) ? (requested as PageId) : "imports";
+  });
+  const [candidateBatchFilter, setCandidateBatchFilter] = useState<string>(() => {
+    return new URLSearchParams(window.location.search).get("batch_id")?.trim() || "";
+  });
+  const [candidateRecordLabel, setCandidateRecordLabel] = useState<string>(() => {
+    return new URLSearchParams(window.location.search).get("record_id")?.trim() || "";
+  });
+  const [exportTab, setExportTab] = useState<'memory' | 'knowledge' | 'web'>(() => {
+    const requestedTab = new URLSearchParams(window.location.search).get("tab");
+    return requestedTab === "knowledge" || requestedTab === "web" || requestedTab === "memory"
+      ? requestedTab
+      : "memory";
+  });
   const [authorizationDraft, setAuthorizationDraft] = useState<FixedDraft | null>(null);
   const [health, setHealth] = useState<VaultHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -485,8 +500,8 @@ export default function App() {
   const [busyCandidates, setBusyCandidates] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const candidateRequestSequence = useRef(0);
-  const candidateFilters = useRef({ status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter });
-  candidateFilters.current = { status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter };
+  const candidateFilters = useRef({ status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter, batchId: candidateBatchFilter });
+  candidateFilters.current = { status: candidateStatusFilter, kind: candidateKindFilter, origin: candidateOriginFilter, evidence: candidateEvidenceFilter, batchId: candidateBatchFilter };
   const [candidateError, setCandidateError] = useState<string | null>(null);
   const [candidateNotice, setCandidateNotice] = useState<string | null>(null);
   const [showManualCandidateForm, setShowManualCandidateForm] = useState(false);
@@ -598,7 +613,7 @@ export default function App() {
     let active = true;
     const sequence = ++candidateRequestSequence.current;
     setCandidateError(null);
-    getCandidates({ status: candidateStatusFilter, kind: candidateKindFilter || undefined, origin: candidateOriginFilter || undefined, evidence: candidateEvidenceFilter || undefined })
+    getCandidates({ status: candidateStatusFilter, kind: candidateKindFilter || undefined, origin: candidateOriginFilter || undefined, evidence: candidateEvidenceFilter || undefined, batch_id: candidateBatchFilter || undefined })
       .then((items) => {
         if (!active || sequence !== candidateRequestSequence.current) return;
         setCandidates(items);
@@ -609,7 +624,7 @@ export default function App() {
         if (active && sequence === candidateRequestSequence.current) setCandidateError(reason instanceof Error ? reason.message : "无法读取候选内容。");
       });
     return () => { active = false; };
-  }, [pageId, candidateStatusFilter, candidateKindFilter, candidateOriginFilter, candidateEvidenceFilter]);
+  }, [pageId, candidateStatusFilter, candidateKindFilter, candidateOriginFilter, candidateEvidenceFilter, candidateBatchFilter]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setLibraryQuery(librarySearchInput), 250);
@@ -673,7 +688,7 @@ export default function App() {
   async function refreshCandidates() {
     const sequence = ++candidateRequestSequence.current;
     const filters = candidateFilters.current;
-    const items = await getCandidates({ status: filters.status, kind: filters.kind || undefined, origin: filters.origin || undefined, evidence: filters.evidence || undefined });
+    const items = await getCandidates({ status: filters.status, kind: filters.kind || undefined, origin: filters.origin || undefined, evidence: filters.evidence || undefined, batch_id: filters.batchId || undefined });
     if (sequence !== candidateRequestSequence.current) return;
     setCandidates(items);
     setCheckedCandidates((current) => current.filter((id) => items.some((item) => item.id === id && item.status === "pending" && canConfirmCandidate(item))));
@@ -1116,8 +1131,8 @@ export default function App() {
         ) : pageId === "adp" ? (
           <AdpExport />
         ) : pageId === "authorization" ? null : pageId === "pack" ? (
-          <div className="export-center"><nav className="export-tabs" aria-label="导出类型"><button className={exportTab === 'memory' ? 'selected' : ''} onClick={() => setExportTab('memory')}>Memory Pack</button><button className={exportTab === 'knowledge' ? 'selected' : ''} onClick={() => setExportTab('knowledge')}>Knowledge 文档</button></nav>
-            {exportTab === 'memory' ? <MemoryPackPage projects={projects} projectLoadError={projectLoadError} onRetryProjects={retryProjects} onAuthorize={draft => { setAuthorizationDraft(draft); setPageId("authorization"); }} /> : <KnowledgeExport projects={projects} />}
+          <div className="export-center"><nav className="export-tabs" aria-label="导出类型"><button className={exportTab === 'memory' ? 'selected' : ''} onClick={() => setExportTab('memory')}>Memory Pack</button><button className={exportTab === 'knowledge' ? 'selected' : ''} onClick={() => setExportTab('knowledge')}>Knowledge 文档</button><button className={exportTab === 'web' ? 'selected' : ''} onClick={() => setExportTab('web')}>Web 数据</button></nav>
+            {exportTab === 'memory' ? <MemoryPackPage projects={projects} projectLoadError={projectLoadError} onRetryProjects={retryProjects} onAuthorize={draft => { setAuthorizationDraft(draft); setPageId("authorization"); }} /> : exportTab === 'knowledge' ? <KnowledgeExport projects={projects} /> : <WebDataExport projects={projects} />}
           </div>
         ) : pageId === "library" ? (
           <section className="workspace library-workspace">
@@ -1184,6 +1199,32 @@ export default function App() {
               <div><strong>候选记忆</strong><span>核查候选内容、原始来源或人工标记，再决定是否写入正式记忆。</span></div>
               <button className="secondary-button" onClick={openManualCandidateForm}>＋ 人工新增</button>
             </div>
+            {candidateBatchFilter ? (
+              <div className="review-scope-banner" role="status">
+                <span>
+                  当前仅显示记录 <code>{candidateRecordLabel || candidateBatchFilter}</code> 抽取的候选记忆
+                </span>
+                <div className="review-scope-actions">
+                  {candidateStatusFilter !== "all" ? (
+                    <button className="secondary-button" onClick={() => setCandidateStatusFilter("all")}>查看该记录全部状态</button>
+                  ) : null}
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setCandidateBatchFilter("");
+                      setCandidateRecordLabel("");
+                      const params = new URLSearchParams(window.location.search);
+                      params.delete("batch_id");
+                      params.delete("record_id");
+                      const nextSearch = params.toString();
+                      window.history.replaceState(null, "", nextSearch ? `?${nextSearch}` : window.location.pathname);
+                    }}
+                  >
+                    查看全部记录候选
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="review-toolbar review-filter-toolbar">
               <div className="review-filters">
                 <label>状态<select value={candidateStatusFilter} onChange={(event) => setCandidateStatusFilter(event.target.value)}><option value="pending">待审核</option><option value="all">全部</option><option value="confirmed">已确认</option><option value="rejected">已拒绝</option></select></label>
@@ -1242,7 +1283,7 @@ export default function App() {
                       {typeof candidate.metadata?.part_index === "number" && typeof candidate.metadata?.part_count === "number" ? <div className="notice">同一情节的第 {candidate.metadata.part_index} / {candidate.metadata.part_count} 部分；各部分独立审核，共同关联原情节来源。</div> : null}
                       {candidate.metadata?.output_language_not_chinese === true ? <div className="notice warning">候选标题或正文未检测到中文（专有名词等也可能触发）；请核对语义和原文后再确认。</div> : null}
                       {candidate.metadata?.output_truncated === true ? <div className="notice warning">候选内容因长度限制被截断；请核对原文并编辑后再确认。</div> : null}
-                      {candidate.status === "pending" ? <div className="candidate-actions"><button className="primary-button" disabled={busyCandidates.has(candidate.id) || !draft.content.trim() || !supportedKind } onClick={() => void reviewCandidate(candidate, "confirm")}>{busyCandidates.has(candidate.id) ? "处理中…" : confirmable ? "确认入库" : "标记为人工新增并确认"}</button><button className="secondary-button danger-button" disabled={busyCandidates.has(candidate.id)} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
+                      {candidate.status === "pending" ? <div className="candidate-actions"><button className="primary-button" disabled={busyCandidates.has(candidate.id) || !draft.content.trim() || !supportedKind} onClick={() => void reviewCandidate(candidate, "confirm")}>{busyCandidates.has(candidate.id) ? "处理中…" : confirmable ? "确认入库" : "标记为人工新增并确认"}</button><button className="secondary-button danger-button" disabled={busyCandidates.has(candidate.id)} onClick={() => void reviewCandidate(candidate, "reject")}>拒绝</button></div> : null}
                     </div>
                     <div className="source-links"><h3>来源证据</h3>{candidate.evidence.length ? candidate.evidence.filter((item, index, items) => items.findIndex((other) => item.conversation_id ? other.conversation_id === item.conversation_id : other.message_id === item.message_id) === index).map((item, index, items) => <div className="source-link" key={item.message_id}>{items.length > 1 ? <span>来源会话 {index + 1}</span> : null}<button className="secondary-button" onClick={() => void openSource(candidate.id, item.message_id, draft.content)}>打开原对话</button></div>) : <p className="subtle">{candidate.origin === "manual" ? "人工新增，没有原文件来源。" : "没有可定位的归档消息。"}</p>}</div>
                   </>;

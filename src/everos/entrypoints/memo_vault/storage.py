@@ -255,6 +255,43 @@ CREATE TABLE IF NOT EXISTS exports (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS data_vault_records (
+    request_id TEXT PRIMARY KEY,
+    record_id TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    domain TEXT NOT NULL DEFAULT '',
+    capture_mode TEXT NOT NULL DEFAULT 'page',
+    capture_scope TEXT NOT NULL DEFAULT '',
+    unit_count INTEGER NOT NULL,
+    html_relpath TEXT NOT NULL,
+    html_sha256 TEXT NOT NULL,
+    html_bytes INTEGER NOT NULL,
+    payload_relpath TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_data_vault_records_created
+    ON data_vault_records(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_vault_deliveries (
+    request_id TEXT PRIMARY KEY,
+    record_id TEXT NOT NULL UNIQUE,
+    batch_id TEXT NOT NULL UNIQUE REFERENCES import_batches(id),
+    project_id TEXT NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'chatgpt',
+    title TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    unit_count INTEGER NOT NULL,
+    payload_relpath TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_agent_vault_deliveries_created
+    ON agent_vault_deliveries(created_at DESC);
 """
 
 
@@ -265,9 +302,11 @@ class VaultStore:
         self.data_dir = data_dir
         self.database_path = data_dir / "vault.sqlite3"
         self.evidence_dir = data_dir / "evidence"
+        self.data_vault_dir = data_dir / "data_vault"
 
     def initialize(self) -> None:
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
+        self.data_vault_dir.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.database_path) as connection:
             connection.executescript(_SCHEMA)
             self._migrate_import_schema(connection)
